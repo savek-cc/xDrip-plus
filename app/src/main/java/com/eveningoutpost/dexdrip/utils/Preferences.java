@@ -625,6 +625,10 @@ public class Preferences extends PreferenceActivity {
             bindTTSListener();
             final Preference collectionMethod = findPreference("dex_collection_method");
             final Preference runInForeground = findPreference("run_service_in_foreground");
+            final Preference scanConstantly = findPreference("run_ble_scan_constantly");
+            final Preference runOnMain = findPreference("run_G5_ble_tasks_on_uithread");
+            final Preference reAuth = findPreference("always_get_new_keys");
+            final Preference reBond = findPreference("always_unbond_G5");
             final Preference wifiRecievers = findPreference("wifi_recievers_addresses");
             final Preference predictiveBG = findPreference("predictive_bg");
             final Preference interpretRaw = findPreference("interpret_raw");
@@ -656,7 +660,7 @@ public class Preferences extends PreferenceActivity {
 
             final Preference scanShare = findPreference("scan_share2_barcode");
             final EditTextPreference transmitterId = (EditTextPreference) findPreference("dex_txid");
-            final Preference closeGatt = findPreference("close_gatt_on_ble_disconnect");
+           // final Preference closeGatt = findPreference("close_gatt_on_ble_disconnect");
 
             final Preference pebbleSync2 = findPreference("broadcast_to_pebble_type");
             final Preference pebbleSync1 = findPreference("broadcast_to_pebble");
@@ -841,12 +845,22 @@ public class Preferences extends PreferenceActivity {
             if ((collectionType != DexCollectionType.DexbridgeWixel)
                     && (collectionType != DexCollectionType.WifiDexBridgeWixel)) {
                 collectionCategory.removePreference(transmitterId);
-                collectionCategory.removePreference(closeGatt);
+               // collectionCategory.removePreference(closeGatt);
             }
 
-            // shouldn't this be merged in to logic above?
+
             if (collectionType == DexCollectionType.DexcomG5) {
                 collectionCategory.addPreference(transmitterId);
+                collectionCategory.addPreference(scanConstantly);
+                collectionCategory.addPreference(reAuth);
+                collectionCategory.addPreference(reBond);
+                collectionCategory.addPreference(runOnMain);
+            } else {
+               // collectionCategory.removePreference(transmitterId);
+                collectionCategory.removePreference(scanConstantly);
+                collectionCategory.removePreference(reAuth);
+                collectionCategory.removePreference(reBond);
+                collectionCategory.removePreference(runOnMain);
             }
 
 
@@ -1096,6 +1110,7 @@ public class Preferences extends PreferenceActivity {
                             && collectionType != DexCollectionType.WifiWixel
                             && collectionType != DexCollectionType.DexbridgeWixel
                             && collectionType != DexCollectionType.LimiTTer
+                            && collectionType != DexCollectionType.DexcomG5
                             && collectionType != DexCollectionType.WifiBlueToothWixel
                             && collectionType != DexCollectionType.WifiDexBridgeWixel
                             ) {
@@ -1122,11 +1137,11 @@ public class Preferences extends PreferenceActivity {
                     if ((collectionType != DexCollectionType.DexbridgeWixel)
                             && (collectionType != DexCollectionType.WifiDexBridgeWixel)) {
                         collectionCategory.removePreference(transmitterId);
-                        collectionCategory.removePreference(closeGatt);
+                        //collectionCategory.removePreference(closeGatt);
                         //TODO Bridge battery display support
                     } else {
                         collectionCategory.addPreference(transmitterId);
-                        collectionCategory.addPreference(closeGatt);
+                     //   collectionCategory.addPreference(closeGatt);
                     }
 
                     if (collectionType == DexCollectionType.DexcomG5) {

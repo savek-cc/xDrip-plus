@@ -202,7 +202,7 @@ public class Home extends ActivityWithMenu {
         set_is_follower();
 
         prefs = PreferenceManager.getDefaultSharedPreferences(getApplicationContext());
-        checkEula();
+        final boolean checkedeula = checkEula();
         setContentView(R.layout.activity_home);
 
         Toolbar mToolbar = (Toolbar) findViewById(R.id.my_toolbar);
@@ -371,7 +371,11 @@ public class Home extends ActivityWithMenu {
         });
 
         JoH.fixActionBar(this);
-        getSupportActionBar().setTitle(R.string.app_name);
+        try {
+            getSupportActionBar().setTitle(R.string.app_name);
+        } catch (NullPointerException e) {
+            Log.e(TAG, "Couldn't set title due to null pointer");
+        }
         activityVisible = true;
 
         // handle incoming extras
@@ -382,7 +386,7 @@ public class Home extends ActivityWithMenu {
         PlusSyncService.startSyncService(getApplicationContext(), "HomeOnCreate");
         ParakeetHelper.notifyOnNextCheckin(false);
 
-        if (!getString(R.string.app_name).equals("xDrip+")) {
+        if ((checkedeula) && (!getString(R.string.app_name).equals("xDrip+"))) {
             showcasemenu(SHOWCASE_VARIANT);
         }
 
@@ -1058,18 +1062,22 @@ public class Home extends ActivityWithMenu {
         return menu_name;
     }
 
-    private void checkEula() {
+    private boolean checkEula() {
 
-        boolean warning_agreed_to = prefs.getBoolean("warning_agreed_to", false);
+        final boolean warning_agreed_to = prefs.getBoolean("warning_agreed_to", false);
         if (!warning_agreed_to) {
             startActivity(new Intent(getApplicationContext(), Agreement.class));
             finish();
+            return false;
         } else {
-            boolean IUnderstand = prefs.getBoolean("I_understand", false);
+            final boolean IUnderstand = prefs.getBoolean("I_understand", false);
             if (!IUnderstand) {
                 Intent intent = new Intent(getApplicationContext(), LicenseAgreementActivity.class);
                 startActivity(intent);
                 finish();
+                return false;
+            } else {
+                return true;
             }
         }
     }
@@ -1516,16 +1524,21 @@ public class Home extends ActivityWithMenu {
         df.setMaximumFractionDigits(0);
 
         final boolean isDexbridge = CollectionServiceStarter.isDexBridgeOrWifiandDexBridge();
+        final boolean isLimitter = CollectionServiceStarter.isLimitter();
         //boolean isWifiWixel = CollectionServiceStarter.isWifiandBTWixel(getApplicationContext()) | CollectionServiceStarter.isWifiWixel(getApplicationContext());
-        if (isDexbridge) {
+        if (isDexbridge||isLimitter) {
             int bridgeBattery = prefs.getInt("bridge_battery", 0);
 
             if (bridgeBattery == 0) {
                 //dexbridgeBattery.setText(R.string.waiting_for_packet);
                 dexbridgeBattery.setVisibility(View.INVISIBLE);
             } else {
-                dexbridgeBattery.setText(getString(R.string.xbridge_battery) + ": " + bridgeBattery + "%");
-            }
+                if (isDexbridge) {
+                    dexbridgeBattery.setText(getString(R.string.xbridge_battery) + ": " + bridgeBattery + "%");
+                } else {
+                    dexbridgeBattery.setText(getString(R.string.limitter_battery) + ": " + bridgeBattery + "%");
+                }
+                }
             if (bridgeBattery < 50) dexbridgeBattery.setTextColor(Color.YELLOW);
             if (bridgeBattery < 25) dexbridgeBattery.setTextColor(Color.RED);
             else dexbridgeBattery.setTextColor(Color.GREEN);
@@ -1642,6 +1655,11 @@ public class Home extends ActivityWithMenu {
                 if (extraline.length() != 0) extraline.append(' ');
                 extraline.append(statsResult.getLowPercentage());
             }
+        }
+        if (prefs.getBoolean("status_line_capture_percentage", false)) {
+            if (extraline.length() != 0) extraline.append(' ');
+            if (BgGraphBuilder.capturePercentage>-1)
+                extraline.append("Cap: "+JoH.qs(BgGraphBuilder.capturePercentage)+"%");
         }
         if (prefs.getBoolean("status_line_time", false)) {
             SimpleDateFormat sdf = new SimpleDateFormat("HH:mm");
@@ -2203,6 +2221,17 @@ public class Home extends ActivityWithMenu {
         }
         if (prefs != null) {
             prefs.edit().putLong(pref, lng).apply();
+            return true;
+        }
+        return false;
+    }
+
+    public static boolean setPreferencesInt(final String pref, final int num) {
+        if ((prefs == null) && (xdrip.getAppContext() != null)) {
+            prefs = PreferenceManager.getDefaultSharedPreferences(xdrip.getAppContext());
+        }
+        if (prefs != null) {
+            prefs.edit().putInt(pref, num).apply();
             return true;
         }
         return false;
