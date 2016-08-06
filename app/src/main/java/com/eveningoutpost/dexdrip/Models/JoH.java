@@ -405,6 +405,22 @@ public class JoH {
         }
     }
 
+    public static void static_toast_long(final String msg) {
+        try {
+            Activity activity = (Activity) xdrip.getAppContext();
+            activity.runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    Toast.makeText(xdrip.getAppContext(), msg, Toast.LENGTH_LONG).show();
+                }
+            });
+            Log.d(TAG, "Toast msg: " + msg);
+        } catch (Exception e) {
+            Log.e(TAG, "Couldn't display toast: " + msg + " e: "+e.toString());
+            Home.toaststatic(msg);
+        }
+    }
+
     public static String urlEncode(String source) {
         try {
             return URLEncoder.encode(source, "UTF-8");
@@ -471,12 +487,23 @@ public class JoH {
     }
 
     public synchronized static void restartBluetooth(final Context context) {
+        restartBluetooth(context, 0);
+    }
+
+    public synchronized static void restartBluetooth(final Context context, final int startInMs) {
         new Thread() {
             @Override
             public void run() {
                 final PowerManager.WakeLock wl = getWakeLock("restart-bluetooth", 60000);
-                Log.d(TAG,"Restarting bluetooth");
+                Log.d(TAG, "Restarting bluetooth");
                 try {
+                    if (startInMs > 0) {
+                        try {
+                            Thread.sleep(startInMs);
+                        } catch (InterruptedException e) {
+                            Log.d(TAG, "Got interrupted waiting to start resetBluetooth");
+                        }
+                    }
                     setBluetoothEnabled(context, false);
                     try {
                         Thread.sleep(6000);
