@@ -8,16 +8,20 @@ import android.provider.BaseColumns;
 import com.activeandroid.Model;
 import com.activeandroid.annotation.Column;
 import com.activeandroid.annotation.Table;
+import com.activeandroid.query.Delete;
 import com.activeandroid.query.Select;
 import com.eveningoutpost.dexdrip.Models.Calibration;
+import com.eveningoutpost.dexdrip.Models.Sensor;
+import com.eveningoutpost.dexdrip.Models.UserError.Log;
 
 import java.util.List;
 
 /**
- * Created by stephenblack on 11/7/14.
+ * Created by Emma Black on 11/7/14.
  */
 @Table(name = "CalibrationSendQueue", id = BaseColumns._ID)
 public class CalibrationSendQueue extends Model {
+    private final static String TAG = CalibrationSendQueue.class.getSimpleName();
 
     @Column(name = "calibration", index = true)
     public Calibration calibration;
@@ -45,12 +49,26 @@ public class CalibrationSendQueue extends Model {
                 .limit(20)
                 .execute();
     }
+
+    public static List<CalibrationSendQueue> cleanQueue() {
+        return new Delete()
+                .from(CalibrationSendQueue.class)
+                .where("mongo_success = ?", true)
+                .execute();
+    }
+
     public static void addToQueue(Calibration calibration, Context context) {
-        CalibrationSendQueue calibrationSendQueue = new CalibrationSendQueue();
-        calibrationSendQueue.calibration = calibration;
-        calibrationSendQueue.success = false;
-        calibrationSendQueue.mongo_success = false;
-        calibrationSendQueue.save();
+
+        // TODO support for various insert/update/delete functions
+
+        //  CalibrationSendQueue calibrationSendQueue = new CalibrationSendQueue();
+        //  calibrationSendQueue.calibration = calibration;
+        //  calibrationSendQueue.success = false;
+        //  calibrationSendQueue.mongo_success = false;
+        //  calibrationSendQueue.save();
+        UploaderQueue.newEntry("create", calibration);
+        Log.i(TAG, "calling SensorSendQueue.SendToFollower");
+        SensorSendQueue.SendToFollower(Sensor.getByUuid(calibration.sensor_uuid));
     }
 
     public void markMongoSuccess() {

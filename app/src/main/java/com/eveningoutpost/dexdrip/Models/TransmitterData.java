@@ -10,6 +10,9 @@ import com.activeandroid.Model;
 import com.activeandroid.annotation.Column;
 import com.activeandroid.annotation.Table;
 import com.activeandroid.query.Select;
+import com.eveningoutpost.dexdrip.utils.CheckBridgeBattery;
+import com.eveningoutpost.dexdrip.utils.DexCollectionType;
+import com.google.gson.annotations.Expose;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -17,25 +20,30 @@ import java.util.Date;
 import java.util.UUID;
 
 /**
- * Created by stephenblack on 11/6/14.
+ * Created by Emma Black on 11/6/14.
  */
 
 @Table(name = "TransmitterData", id = BaseColumns._ID)
 public class TransmitterData extends Model {
     private final static String TAG = TransmitterData.class.getSimpleName();
 
+    @Expose
     @Column(name = "timestamp", index = true)
     public long timestamp;
 
+    @Expose
     @Column(name = "raw_data")
     public double raw_data;
 
+    @Expose
     @Column(name = "filtered_data")
     public double filtered_data;
 
+    @Expose
     @Column(name = "sensor_battery_level")
     public int sensor_battery_level;
 
+    @Expose
     @Column(name = "uuid", index = true)
     public String uuid;
 
@@ -65,14 +73,29 @@ public class TransmitterData extends Model {
             for (int i = 0; i < len; ++i) { data_string.append((char) buffer[i]); }
             final String[] data = data_string.toString().split("\\s+");
 
-            if (data.length > 1) { 
+            if (data.length > 1) {
                 transmitterData.sensor_battery_level = Integer.parseInt(data[1]);
                 if (data.length > 2) {
                     try {
                         Home.setPreferencesInt("bridge_battery", Integer.parseInt(data[2]));
-                        if (Home.get_master()) GcmActivity.sendBridgeBattery(Home.getPreferencesInt("bridge_battery",-1));
+                        if (Home.get_master()) {
+                            GcmActivity.sendBridgeBattery(Home.getPreferencesInt("bridge_battery", -1)); }
+                        CheckBridgeBattery.checkBridgeBattery();
                     } catch (Exception e) {
                         Log.e(TAG, "Got exception processing classic wixel or limitter battery value: " + e.toString());
+                    }
+                    if (data.length > 3) {
+                        if ((DexCollectionType.getDexCollectionType() == DexCollectionType.LimiTTer)
+                                && (!Home.getPreferencesBooleanDefaultFalse("use_transmiter_pl_bluetooth"))) {
+                            try {
+                                // reported sensor age in minutes
+                                final Integer sensorAge = Integer.parseInt(data[3]);
+                                if ((sensorAge > 0) && (sensorAge < 200000))
+                                    Home.setPreferencesInt("nfc_sensor_age", sensorAge);
+                            } catch (Exception e) {
+                                Log.e(TAG, "Got exception processing field 4 in classic limitter protocol: " + e);
+                            }
+                        }
                     }
                 }
             }
@@ -136,6 +159,40 @@ public class TransmitterData extends Model {
                 .from(TransmitterData.class)
                 .orderBy("_ID desc")
                 .executeSingle();
+    }
+
+    public static TransmitterData getForTimestamp(double timestamp) {//KS
+        try {
+            Sensor sensor = Sensor.currentSensor();
+            if (sensor != null) {
+                TransmitterData bgReading = new Select()
+                        .from(TransmitterData.class)
+                        .where("timestamp <= ?", (timestamp + (60 * 1000))) // 1 minute padding (should never be that far off, but why not)
+                        .orderBy("timestamp desc")
+                        .executeSingle();
+                if (bgReading != null && Math.abs(bgReading.timestamp - timestamp) < (3 * 60 * 1000)) { //cool, so was it actually within 4 minutes of that bg reading?
+                    Log.i(TAG, "getForTimestamp: Found a BG timestamp match");
+                    return bgReading;
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG,"getForTimestamp() Got exception on Select : "+e.toString());
+            return null;
+        }
+        Log.d(TAG, "getForTimestamp: No luck finding a BG timestamp match");
+        return null;
+    }
+
+    public static TransmitterData findByUuid(String uuid) {//KS
+        try {
+            return new Select()
+                .from(TransmitterData.class)
+                .where("uuid = ?", uuid)
+                .executeSingle();
+        } catch (Exception e) {
+            Log.e(TAG,"findByUuid() Got exception on Select : "+e.toString());
+            return null;
+        }
     }
 
     public static void updateTransmitterBatteryFromSync(final int battery_level) {

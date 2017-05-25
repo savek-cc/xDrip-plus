@@ -34,7 +34,7 @@ public class SdcardImportExport extends AppCompatActivity {
 
     private final static String TAG = "jamorham sdcard";
     private final static int MY_PERMISSIONS_REQUEST_STORAGE = 104;
-    private final static String PREFERENCES_FILE = "shared_prefs/com.eveningoutpost.dexdrip_preferences.xml";
+    private final static String PREFERENCES_FILE = "shared_prefs/" + xdrip.getAppContext().getString(R.string.local_target_package) + "_preferences.xml";
     private static Activity activity;
     public static boolean deleteFolder(File path, boolean recursion) {
         try {
@@ -114,6 +114,16 @@ public class SdcardImportExport extends AppCompatActivity {
                 Log.e(TAG, "Error deleting: " + filename);
             }
         }
+        hardReset();
+    }
+
+    public static void deletePersistentStore() {
+        final String filename = "shared_prefs/persist_internal_store.xml";
+            if (deleteFolder(new File(xdrip.getAppContext().getFilesDir().getParent() + "/" + filename), false)) {
+                Log.d(TAG, "Successfully deleted: " + filename);
+            } else {
+                Log.e(TAG, "Error deleting: " + filename);
+            }
         hardReset();
     }
 

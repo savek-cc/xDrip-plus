@@ -1,11 +1,18 @@
 package com.eveningoutpost.dexdrip;
 
 import android.graphics.Color;
+import android.support.v4.content.ContextCompat;
+import android.support.wearable.watchface.WatchFaceStyle;
+import android.view.Gravity;
 import android.view.LayoutInflater;
+import android.widget.LinearLayout;
 
-import com.ustwo.clockwise.WatchMode;
+import com.eveningoutpost.dexdrip.Models.JoH;
+import com.ustwo.clockwise.common.WatchMode;
 
 public class LargeHome extends BaseWatchFace {
+    private static final String TAG = "jamorham: " + Home.class.getSimpleName();
+    private long fontsizeTapTime = 0l;
 
     @Override
     public void onCreate() {
@@ -15,59 +22,108 @@ public class LargeHome extends BaseWatchFace {
         performViewSetup();
     }
 
+    @Override
+    protected void onTapCommand(int tapType, int x, int y, long eventTime) {
+
+        if (tapType == TAP_TYPE_TAP&&
+                ((x >=mDirectionDelta.getLeft() &&
+                        x <= mDirectionDelta.getRight()&&
+                        y >= mDirectionDelta.getTop() &&
+                        y <= mDirectionDelta.getBottom()) )) {//||
+            if (eventTime - fontsizeTapTime < 800) {
+                setSmallFontsize(true);
+            }
+            fontsizeTapTime = eventTime;
+        }
+        if (tapType == TAP_TYPE_TOUCH && x >=mDirectionDelta.getLeft() && linearLayout(mLinearLayout, x, y)) {
+            JoH.static_toast_short(mStatusLine);
+        }
+        if (tapType == TAP_TYPE_TOUCH && linearLayout(mStepsLinearLayout, x, y)) {
+            if (sharedPrefs.getBoolean("showSteps", false) && mStepsCount > 0) {
+                JoH.static_toast_long(mStepsToast);
+            }
+        }
+        if (tapType == TAP_TYPE_TOUCH && linearLayout(mDirectionDelta, x, y)) {
+            if (sharedPrefs.getBoolean("extra_status_line", false) && mExtraStatusLine != null && !mExtraStatusLine.isEmpty()) {
+                JoH.static_toast_long(mExtraStatusLine);
+            }
+        }
+    }
+
+    private boolean linearLayout(LinearLayout layout, int x, int y) {
+        if (x >=layout.getLeft() && x <= layout.getRight()&&
+                y >= layout.getTop() && y <= layout.getBottom()) {
+            return true;
+        }
+        return false;
+    }
+
+    @Override
+    protected WatchFaceStyle getWatchFaceStyle(){
+        //return new WatchFaceStyle.Builder(this).setAcceptsTapEvents(true).build();
+        return new WatchFaceStyle.Builder(this)
+                .setAcceptsTapEvents(true)
+                .setHotwordIndicatorGravity(Gravity.CENTER | Gravity.TOP)
+                .setStatusBarGravity(Gravity.END | -20)
+                .build();
+    }
 
     @Override
     protected void setColorDark(){
-        mTime.setTextColor(Color.WHITE);
-        mRelativeLayout.setBackgroundColor(Color.BLACK);
-        mLinearLayout.setBackgroundColor(Color.WHITE);
+        mLinearLayout.setBackgroundColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_mLinearLayout));
+        mTime.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_mTime));
+        mRelativeLayout.setBackgroundColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_background));
         if (sgvLevel == 1) {
-            mSgv.setTextColor(Color.YELLOW);
-            mDirection.setTextColor(Color.YELLOW);
-            mDelta.setTextColor(Color.YELLOW);
+            mSgv.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_highColor));
+            mDelta.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_highColor));
+            mDirection.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_highColor));
         } else if (sgvLevel == 0) {
-            mSgv.setTextColor(Color.WHITE);
-            mDirection.setTextColor(Color.WHITE);
-            mDelta.setTextColor(Color.WHITE);
+            mSgv.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_midColor));
+            mDelta.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_midColor));
+            mDirection.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_midColor));
         } else if (sgvLevel == -1) {
-            mSgv.setTextColor(Color.RED);
-            mDirection.setTextColor(Color.RED);
-            mDelta.setTextColor(Color.RED);
+            mSgv.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_lowColor));
+            mDelta.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_lowColor));
+            mDirection.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_lowColor));
         }
+
         if (ageLevel == 1) {
-            mTimestamp.setTextColor(Color.BLACK);
+            mTimestamp.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_mTimestamp1_home));
         } else {
-            mTimestamp.setTextColor(Color.RED);
+            mTimestamp.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_TimestampOld));
         }
 
         if (batteryLevel == 1) {
-            mUploaderBattery.setTextColor(Color.BLACK);
+            mUploaderBattery.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_uploaderBattery));
         } else {
-            mUploaderBattery.setTextColor(Color.RED);
+            mUploaderBattery.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_uploaderBatteryEmpty));
+        }
+        if (mXBatteryLevel == 1) {
+            mUploaderXBattery.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_uploaderBattery));
+        } else {
+            mUploaderXBattery.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_uploaderBatteryEmpty));
         }
 
-        mRaw.setTextColor(Color.BLACK);
+        mStatus.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_mStatus_home));
     }
-
-
 
     @Override
     protected void setColorBright() {
         if (getCurrentWatchMode() == WatchMode.INTERACTIVE) {
-            mRelativeLayout.setBackgroundColor(Color.WHITE);
-            mLinearLayout.setBackgroundColor(Color.BLACK);
+            mLinearLayout.setBackgroundColor(ContextCompat.getColor(getApplicationContext(), R.color.light_stripe_background));
+            mRelativeLayout.setBackgroundColor(ContextCompat.getColor(getApplicationContext(), R.color.light_background));
             if (sgvLevel == 1) {
-                mSgv.setTextColor(Color.YELLOW);
-                mDirection.setTextColor(Color.YELLOW);
-                mDelta.setTextColor(Color.YELLOW);
+                mSgv.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.light_highColor));
+                mDelta.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.light_highColor));
+                mDirection.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.light_highColor));
             } else if (sgvLevel == 0) {
-                mSgv.setTextColor(Color.BLACK);
-                mDirection.setTextColor(Color.BLACK);
-                mDelta.setTextColor(Color.BLACK);
+                mSgv.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.light_midColor));
+                mDelta.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.light_midColor));
+                mDirection.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.light_midColor));
             } else if (sgvLevel == -1) {
-                mSgv.setTextColor(Color.RED);
-                mDirection.setTextColor(Color.RED);
-                mDelta.setTextColor(Color.RED);
+                mSgv.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.light_lowColor));
+                mDelta.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.light_lowColor));
+                mDirection.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.light_lowColor));
             }
 
             if (ageLevel == 1) {
@@ -81,7 +137,12 @@ public class LargeHome extends BaseWatchFace {
             } else {
                 mUploaderBattery.setTextColor(Color.RED);
             }
-            mRaw.setTextColor(Color.WHITE);
+            if (batteryLevel == 1) {
+                mUploaderXBattery.setTextColor(Color.WHITE);
+            } else {
+                mUploaderXBattery.setTextColor(Color.RED);
+            }
+            mStatus.setTextColor(Color.WHITE);
             mTime.setTextColor(Color.BLACK);
         } else {
             mRelativeLayout.setBackgroundColor(Color.BLACK);
@@ -102,8 +163,22 @@ public class LargeHome extends BaseWatchFace {
 
             mUploaderBattery.setTextColor(Color.BLACK);
             mTimestamp.setTextColor(Color.BLACK);
-            mRaw.setTextColor(Color.BLACK);
+            mStatus.setTextColor(Color.BLACK);
             mTime.setTextColor(Color.WHITE);
         }
+    }
+
+    @Override
+    protected void setColorLowRes() {
+        mLinearLayout.setBackgroundColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_mLinearLayout));
+        mTime.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_mTime));
+        mRelativeLayout.setBackgroundColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_background));
+        mSgv.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_midColor));
+        mDelta.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_midColor));
+        mDirection.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_midColor));
+        mTimestamp.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_mTimestamp1_home));
+        mUploaderBattery.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_uploaderBattery));
+        mUploaderXBattery.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_uploaderBattery));
+        mStatus.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_mStatus_home));
     }
 }

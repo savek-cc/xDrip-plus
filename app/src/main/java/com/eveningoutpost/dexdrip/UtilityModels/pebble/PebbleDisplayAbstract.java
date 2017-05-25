@@ -6,13 +6,21 @@ import android.content.IntentFilter;
 import android.os.BatteryManager;
 import android.preference.PreferenceManager;
 
+import com.eveningoutpost.dexdrip.BestGlucose;
+import com.eveningoutpost.dexdrip.Home;
 import com.eveningoutpost.dexdrip.Models.BgReading;
+import com.eveningoutpost.dexdrip.Models.JoH;
+import com.eveningoutpost.dexdrip.Models.UserError;
 import com.eveningoutpost.dexdrip.ParakeetHelper;
 import com.eveningoutpost.dexdrip.UtilityModels.BgGraphBuilder;
+import com.eveningoutpost.dexdrip.UtilityModels.Constants;
 import com.eveningoutpost.dexdrip.utils.DexCollectionType;
 import com.eveningoutpost.dexdrip.utils.Preferences;
+import com.eveningoutpost.dexdrip.xdrip;
 import com.getpebble.android.kit.PebbleKit;
 import com.getpebble.android.kit.util.PebbleDictionary;
+
+import java.util.UUID;
 
 /**
  * Created by andy on 02/06/16.
@@ -34,6 +42,10 @@ public abstract class PebbleDisplayAbstract implements PebbleDisplayInterface {
     protected BgReading bgReading;
     protected PebbleWatchSync pebbleWatchSync;
 
+    protected static final boolean use_best_glucose = true;
+    protected BestGlucose.DisplayGlucose dg;
+
+    protected long last_seen_timestamp = 0;
 
     public void receiveNack(int transactionId) {
         // default no implementation
@@ -41,6 +53,16 @@ public abstract class PebbleDisplayAbstract implements PebbleDisplayInterface {
 
     public void receiveAck(int transactionId) {
         // default no implementation
+    }
+
+    public void receiveAppData(int transactionId, PebbleDictionary data) {
+        // handle app incoming data
+        PebbleWatchSync.receiveAppData(transactionId, data);
+    }
+
+    public UUID watchfaceUUID()
+    {
+        return PebbleWatchSync.PEBBLEAPP_UUID;
     }
 
     @Override
@@ -61,6 +83,27 @@ public abstract class PebbleDisplayAbstract implements PebbleDisplayInterface {
         return (int) (((float) level / (float) scale) * 100.0f);
     }
 
+    synchronized void pebble_watchdog(boolean online, String tag) {
+        if (online) {
+            last_seen_timestamp = JoH.tsl();
+        } else {
+            if (last_seen_timestamp == 0) return;
+            if ((JoH.msSince(last_seen_timestamp) > 20 * Constants.MINUTE_IN_MS)) {
+                if (!JoH.isOngoingCall()) {
+                    last_seen_timestamp = JoH.tsl();
+                    if (Home.getPreferencesBooleanDefaultFalse("bluetooth_watchdog")) {
+                        UserError.Log.e(tag, "Triggering pebble watchdog reset!");
+                        JoH.restartBluetooth(xdrip.getAppContext());
+                    } else {
+                        UserError.Log.e(tag, "Would have Triggered pebble watchdog reset but bluetooth watchdog is disabled");
+                    }
+                } else {
+                    UserError.Log.d(tag, "Ongoing call blocking pebble watchdog reset");
+                }
+            }
+        }
+    }
+
 
     public String getBatteryString(String key) {
         return String.format("%d", PreferenceManager.getDefaultSharedPreferences(this.context).getInt(key, 0));
@@ -68,10 +111,10 @@ public abstract class PebbleDisplayAbstract implements PebbleDisplayInterface {
 
 
     public String getSlopeOrdinal() {
-        if (this.bgReading == null)
+        if ((use_best_glucose && dg == null) || (!use_best_glucose && this.bgReading == null))
             return "0";
 
-        String arrow_name = this.bgReading.slopeName();
+        final String arrow_name = (use_best_glucose ? dg.delta_name : this.bgReading.slopeName());
         if (arrow_name.equalsIgnoreCase("DoubleDown"))
             return "7";
 
@@ -133,7 +176,7 @@ public abstract class PebbleDisplayAbstract implements PebbleDisplayInterface {
 
 
     public void sendDataToPebble(PebbleDictionary data) {
-        PebbleKit.sendDataToPebble(this.context, PebbleWatchSync.PEBBLEAPP_UUID, data);
+        PebbleKit.sendDataToPebble(this.context, watchfaceUUID(), data);
     }
 
 
@@ -157,7 +200,7 @@ public abstract class PebbleDisplayAbstract implements PebbleDisplayInterface {
 
 
     public String getBgReading() {
-        return this.bgGraphBuilder.unitized_string(this.bgReading.calculated_value);
+        return (use_best_glucose) ? ((dg != null) ? dg.unitized : "") : this.bgGraphBuilder.unitized_string(this.bgReading.calculated_value);
     }
 
 

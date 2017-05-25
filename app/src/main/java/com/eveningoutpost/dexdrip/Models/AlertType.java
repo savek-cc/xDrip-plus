@@ -13,6 +13,7 @@ import com.activeandroid.Model;
 import com.activeandroid.annotation.Column;
 import com.activeandroid.annotation.Table;
 import com.activeandroid.query.Select;
+import com.eveningoutpost.dexdrip.Services.ActivityRecognizedService;
 import com.eveningoutpost.dexdrip.Services.MissedReadingService;
 import com.eveningoutpost.dexdrip.UtilityModels.AlertPlayer;
 import com.eveningoutpost.dexdrip.UtilityModels.Notifications;
@@ -21,6 +22,7 @@ import java.util.Calendar;
 import java.util.Date;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -30,7 +32,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 
 /**
- * Created by stephenblack on 1/14/15.
+ * Created by Emma Black on 1/14/15.
  */
 @Table(name = "AlertType", id = BaseColumns._ID)
 public class AlertType extends Model {
@@ -162,20 +164,7 @@ public class AlertType extends Model {
             return null;
         }
 
-        Boolean bg_unclear_readings_alerts = prefs.getBoolean("bg_unclear_readings_alerts", false);
-        Long UnclearTimeSetting = Long.parseLong(prefs.getString("bg_unclear_readings_minutes", "90")) * 60000;
-
-        Long UnclearTime = BgReading.getUnclearTime(UnclearTimeSetting);
-
         AlertType at;
-        if (UnclearTime >= UnclearTimeSetting && bg_unclear_readings_alerts ) {
-            Log.d("NOTIFICATIONS", "Readings have been unclear for too long!!");
-            Notifications.bgUnclearAlert(context);
-        }
-        if ((UnclearTime > 0 ) && bg_unclear_readings_alerts) {
-            Log.d(TAG_ALERT, "We are in an clear state, but not for too long. Alerts are disabled");
-            return null;
-        }
         at = get_highest_active_alert_helper(bg, prefs);
         if (at != null) {
             Log.d(TAG_ALERT, "get_highest_active_alert_helper returned alert uuid = " + at.uuid + " alert name = " + at.name);
@@ -185,18 +174,24 @@ public class AlertType extends Model {
         return at;
     }
 
-    // bg_minute is the estimatin of the bg change rate
-    private static AlertType get_highest_active_alert_helper(double bg, SharedPreferences prefs) {
-        // Chcek the low alerts
-
+    private static AlertType filter_alert_on_stale(AlertType alert, SharedPreferences prefs)
+    {
         // this should already be happening in notifications.java but it doesn't seem to work so adding here as well
         if (prefs.getBoolean("disable_alerts_stale_data", false)) {
             final int stale_minutes = Math.max(6, Integer.parseInt(prefs.getString("disable_alerts_stale_data_minutes", "15")) + 2);
             if (!BgReading.last_within_minutes(stale_minutes)) {
                 Log.w(TAG, "Blocking alarm raise as data older than: " + stale_minutes);
-                return null;
+                return null; // block
             }
         }
+        return alert; // allow
+    }
+
+    // bg_minute is the estimatin of the bg change rate
+    private static AlertType get_highest_active_alert_helper(double bg, SharedPreferences prefs) {
+        // Chcek the low alerts
+
+        final double offset = ActivityRecognizedService.raise_limit_due_to_vehicle_mode() ? ActivityRecognizedService.getVehicle_mode_adjust_mgdl() : 0;
 
         if(prefs.getLong("low_alerts_disabled_until", 0) > new Date().getTime()){
             Log.i("NOTIFICATIONS", "get_highest_active_alert_helper: Low alerts are currently disabled!! Skipping low alerts");
@@ -204,14 +199,14 @@ public class AlertType extends Model {
         } else {
             List<AlertType> lowAlerts  = new Select()
                     .from(AlertType.class)
-                    .where("threshold >= ?", bg)
+                    .where("threshold >= ?", bg-offset)
                     .where("above = ?", false)
                     .orderBy("threshold asc")
                     .execute();
 
             for (AlertType lowAlert : lowAlerts) {
-                if(lowAlert.should_alarm(bg)) {
-                    return lowAlert;
+                if(lowAlert.should_alarm(bg-offset)) {
+                    return filter_alert_on_stale(lowAlert,prefs);
                 }
             }
         }
@@ -232,7 +227,7 @@ public class AlertType extends Model {
             for (AlertType HighAlert : HighAlerts) {
                 //Log.e(TAG, "Testing high alert " + HighAlert.toString());
                 if(HighAlert.should_alarm(bg)) {
-                    return HighAlert;
+                    return filter_alert_on_stale(HighAlert,prefs);
                 }
             }
         }
@@ -298,7 +293,8 @@ public class AlertType extends Model {
             int end_time_minutes,
             boolean override_silent_mode,
             int snooze,
-            boolean vibrate) {
+            boolean vibrate,
+            boolean active) {
         AlertType at = new AlertType();
         at.name = name;
         at.above = above;
@@ -306,7 +302,7 @@ public class AlertType extends Model {
         at.all_day = all_day;
         at.minutes_between = minutes_between;
         at.uuid = uuid != null? uuid : UUID.randomUUID().toString();
-        at.active = true;
+        at.active = active;
         at.mp3_file = mp3_file;
         at.start_time_minutes = start_time_minutes;
         at.end_time_minutes = end_time_minutes;
@@ -328,23 +324,23 @@ public class AlertType extends Model {
             int end_time_minutes,
             boolean override_silent_mode,
             int snooze,
-            boolean vibrate) {
-
-/*        if(uuid.equals(LOW_ALERT_55)) {
-            // This alert can not be removed/updated
-            return;
-        }*/
+            boolean vibrate,
+            boolean active) {
 
         fixUpTable();
 
-        AlertType at = get_alert(uuid);
+        final AlertType at = get_alert(uuid);
+        if (at == null) {
+            Log.e(TAG, "Alert Type null during update");
+            return;
+        }
         at.name = name;
         at.above = above;
         at.threshold = threshold;
         at.all_day = all_day;
         at.minutes_between = minutes_between;
         at.uuid = uuid;
-        at.active = true;
+        at.active = active;
         at.mp3_file = mp3_file;
         at.start_time_minutes = start_time_minutes;
         at.end_time_minutes = end_time_minutes;
@@ -354,10 +350,6 @@ public class AlertType extends Model {
         at.save();
     }
     public static void remove_alert(String uuid) {
-  /*      if(uuid.equals(LOW_ALERT_55)) {
-            // This alert can not be removed/updated
-            return;
-        }*/
         AlertType alert = get_alert(uuid);
 		if(alert != null) {
 	        alert.delete();
@@ -377,6 +369,15 @@ public class AlertType extends Model {
         return name + " " + above + " " + threshold + " "+ all_day + " " +time +" " + minutes_between + " uuid" + uuid;
     }
 
+    public String toS() {
+        Gson gson = new GsonBuilder()
+                .excludeFieldsWithoutExposeAnnotation()
+                .registerTypeAdapter(Date.class, new DateTypeAdapter())
+                .serializeSpecialFloatingPointValues()
+                .create();
+        return gson.toJson(this);
+    }
+
     public static void print_all() {
         List<AlertType> Alerts  = new Select()
             .from(AlertType.class)
@@ -386,6 +387,15 @@ public class AlertType extends Model {
         for (AlertType alert : Alerts) {
             Log.d(TAG, alert.toString());
         }
+    }
+
+    public static List<AlertType> getAllActive() {
+        List<AlertType> alerts  = new Select()
+                .from(AlertType.class)
+                .where("active = ?", true)
+                .execute();
+
+        return alerts;
     }
 
     public static List<AlertType> getAll(boolean above) {
@@ -404,23 +414,33 @@ public class AlertType extends Model {
         return alerts;
     }
 
-
+    public static boolean activeLowAlertExists() {
+        List<AlertType> alerts = getAll(false);
+        if(alerts == null) {
+            return false;
+        }
+        for (AlertType alert : alerts) {
+            if(alert.active) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     // This function is used to make sure that we always have a static alert on 55 low.
     // This alert will not be editable/removable.
     public static void CreateStaticAlerts() {
         if(get_alert(LOW_ALERT_55) == null) {
-            add_alert(LOW_ALERT_55, "low alert ", false, 55, true, 1, null, 0, 0, true, 20, true);
+            add_alert(LOW_ALERT_55, "low alert ", false, 55, true, 1, null, 0, 0, true, 20, true, true);
         }
     }
 
 
     public static void testAll(Context context) {
-
         remove_all();
-        add_alert(null, "high alert 1", true, 180, true, 10, null, 0, 0, true, 20, true);
-        add_alert(null, "high alert 2", true, 200, true, 10, null, 0, 0, true, 20, true);
-        add_alert(null, "high alert 3", true, 220, true, 10, null, 0, 0, true, 20, true);
+        add_alert(null, "high alert 1", true, 180, true, 10, null, 0, 0, true, 20, true, true);
+        add_alert(null, "high alert 2", true, 200, true, 10, null, 0, 0, true, 20, true, true);
+        add_alert(null, "high alert 3", true, 220, true, 10, null, 0, 0, true, 20, true, true);
         print_all();
         AlertType a1 = get_highest_active_alert(context, 190);
         Log.d(TAG, "a1 = " + a1.toString());
@@ -431,8 +451,8 @@ public class AlertType extends Model {
         AlertType a3 = get_alert(a1.uuid);
         Log.d(TAG, "a1 == a3 ? need to see true " + (a1==a3) + a1 + " " + a3);
 
-        add_alert(null, "low alert 1", false, 80, true, 10, null, 0, 0, true, 20, true);
-        add_alert(null, "low alert 2", false, 60, true, 10, null, 0, 0, true, 20, true);
+        add_alert(null, "low alert 1", false, 80, true, 10, null, 0, 0, true, 20, true, true);
+        add_alert(null, "low alert 2", false, 60, true, 10, null, 0, 0, true, 20, true, true);
 
         AlertType al1 = get_highest_active_alert(context, 90);
         Log.d(TAG, "al1 should be null  " + al1);
@@ -542,7 +562,7 @@ public class AlertType extends Model {
             at.override_silent_mode = override_silent_mode;
             at.default_snooze = snooze;
             at.vibrate = vibrate;
-            AlertPlayer.getPlayer().startAlert(context, false, at, "TEST");
+            AlertPlayer.getPlayer().startAlert(context, false, at, "TEST", false);
     }
 
     // Time is calculated in minutes. that is 01:20 means 80 minutes.

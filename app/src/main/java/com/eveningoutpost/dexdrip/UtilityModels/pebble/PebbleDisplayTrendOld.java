@@ -4,13 +4,17 @@ import android.graphics.Bitmap;
 import android.os.PowerManager;
 import android.preference.PreferenceManager;
 
+import com.eveningoutpost.dexdrip.BestGlucose;
 import com.eveningoutpost.dexdrip.Home;
+import com.eveningoutpost.dexdrip.Models.ActiveBgAlert;
 import com.eveningoutpost.dexdrip.Models.BgReading;
 import com.eveningoutpost.dexdrip.Models.JoH;
 import com.eveningoutpost.dexdrip.Models.UserError.Log;
+import com.eveningoutpost.dexdrip.UtilityModels.AlertPlayer;
 import com.eveningoutpost.dexdrip.UtilityModels.BgGraphBuilder;
 import com.eveningoutpost.dexdrip.UtilityModels.BgSparklineBuilder;
 import com.eveningoutpost.dexdrip.UtilityModels.SimpleImageEncoder;
+import com.eveningoutpost.dexdrip.xdrip;
 import com.getpebble.android.kit.PebbleKit;
 import com.getpebble.android.kit.util.PebbleDictionary;
 
@@ -39,6 +43,10 @@ public class PebbleDisplayTrendOld extends PebbleDisplayAbstract {
     public static final int MESSAGE_KEY = 10;
     public static final int VIBE_KEY = 11;
 
+    public static final int SYNC_KEY = 1000;
+    public static final int PLATFORM_KEY = 1001;
+    public static final int VERSION_KEY = 1002;
+
     public static final int CHUNK_SIZE = 100;
     public static final boolean d = false;
 
@@ -56,6 +64,12 @@ public class PebbleDisplayTrendOld extends PebbleDisplayAbstract {
     private static final boolean debugPNG = false;
     private static boolean didTrend = false;
     private static final ReentrantLock lock = new ReentrantLock();
+
+    private static long pebble_platform = -1;
+    private static String pebble_app_version = "";
+    private static long pebble_sync_value = 0;
+    private static boolean sentInitialSync = false;
+
     private static short sendStep = 5;
     private PebbleDictionary dictionary = new PebbleDictionary();
 
@@ -118,12 +132,39 @@ public class PebbleDisplayTrendOld extends PebbleDisplayAbstract {
         this.pebbleWatchSync.lastTransactionId = transactionId;
         Log.d(TAG, "Received Query. data: " + data.size() + ".");
         PebbleKit.sendAckToPebble(this.context, transactionId);
+        evaluateDataFromPebble(data);
         transactionFailed = false;
         transactionOk = false;
         messageInTransit = false;
         sendStep = 5;
         sendData();
     }
+
+    private void evaluateDataFromPebble(PebbleDictionary data) {
+
+        if (data.size() > 0) {
+            pebble_sync_value = data.getUnsignedIntegerAsLong(SYNC_KEY);
+            pebble_platform = data.getUnsignedIntegerAsLong(PLATFORM_KEY);
+            pebble_app_version = data.getString(VERSION_KEY);
+            Log.d(TAG, "receiveData: pebble_sync_value=" + pebble_sync_value + ", pebble_platform=" + pebble_platform + ", pebble_app_version=" + pebble_app_version);
+
+            switch ((int)pebble_platform) {
+                case 0:
+                    if (PebbleUtil.pebbleDisplayType != PebbleDisplayType.TrendClassic) {
+                        PebbleUtil.pebbleDisplayType = PebbleDisplayType.TrendClassic;
+                        //JoH.static_toast_short("Switching to Pebble Classic Trend");
+                        Log.d(TAG,"Changing to Classic Trend due to platform id");
+                    }
+                    break;
+
+            }
+
+        } else {
+            Log.d(TAG, "receiveData: pebble_app_version not known");
+        }
+    }
+
+
 
     private String lastBfReadingSent;
 
@@ -136,18 +177,26 @@ public class PebbleDisplayTrendOld extends PebbleDisplayAbstract {
             this.dictionary = new PebbleDictionary();
         }
 
-        if (this.bgReading != null) {
+        if (use_best_glucose ? (this.dg != null) : (this.bgReading != null)) {
             boolean no_signal;
 
-            String slopeOrdinal = getSlopeOrdinal();
-            String bgReadingS = getBgReading();
+            final String slopeOrdinal = getSlopeOrdinal();
+            final String bgReadingS = getBgReading();
 
-            Log.v(TAG, "buildDictionary: slopeOrdinal-" + slopeOrdinal + " bgReading-" + bgReadingS + //
-                    " now-" + (int) now.getTime() / 1000 + " bgTime-" + (int) (this.bgReading.timestamp / 1000) + //
-                    " phoneTime-" + (int) (new Date().getTime() / 1000) + " getBgDelta-" + getBgDelta());
-            no_signal = ((new Date().getTime()) - (60000 * 11) - this.bgReading.timestamp > 0);
+            if (use_best_glucose)
+            {
+                Log.v(TAG, "buildDictionary: slopeOrdinal-" + slopeOrdinal + " bgReading-" + bgReadingS + //
+                        " now-" + (int) now.getTime() / 1000 + " bgTime-" + (int) (dg.timestamp / 1000) + //
+                        " phoneTime-" + (int) (new Date().getTime() / 1000) + " getBgDelta-" + getBgDelta());
+                no_signal = (dg.mssince > Home.stale_data_millis());
+            } else {
+                Log.v(TAG, "buildDictionary: slopeOrdinal-" + slopeOrdinal + " bgReading-" + bgReadingS + //
+                        " now-" + (int) now.getTime() / 1000 + " bgTime-" + (int) (this.bgReading.timestamp / 1000) + //
+                        " phoneTime-" + (int) (new Date().getTime() / 1000) + " getBgDelta-" + getBgDelta());
+                no_signal = ((new Date().getTime()) - Home.stale_data_millis() - this.bgReading.timestamp > 0);
+            }
 
-            if (!getBooleanValue("pebble_show_arrows")) {
+            if (!getBooleanValue("pebble_show_arrows") || no_signal) {
                 this.dictionary.addString(ICON_KEY, "0");
             } else {
                 this.dictionary.addString(ICON_KEY, slopeOrdinal);
@@ -160,15 +209,23 @@ public class PebbleDisplayTrendOld extends PebbleDisplayAbstract {
                     this.dictionary.addInt8(VIBE_KEY, (byte) (getBooleanValue("pebble_vibrate_no_signal") ? 0x01 : 0x00)); // not sure what this does exactly
                 } else {
                     this.dictionary.addString(BG_KEY, "?RF");
-                    this.dictionary.addInt8(VIBE_KEY, (byte)(getBooleanValue("pebble_vibrate_no_signal") ? 0x01 : 0x00));
+                    this.dictionary.addInt8(VIBE_KEY, (byte) (getBooleanValue("pebble_vibrate_no_signal") ? 0x01 : 0x00));
                 }
             } else {
                 this.dictionary.addString(BG_KEY, bgReadingS);
-                this.dictionary.addInt8(VIBE_KEY, (byte) 0x00);
+                if (getBooleanValue("pebble_vibe_alerts", false) && ActiveBgAlert.currentlyAlerting()) {
+                    dictionary.addInt8(VIBE_KEY, (byte) 0x03);
+                } else {
+                    this.dictionary.addInt8(VIBE_KEY, (byte) 0x00);
+                }
                 this.lastBfReadingSent = bgReadingS;
             }
 
-            this.dictionary.addUint32(RECORD_TIME_KEY, (int) (((this.bgReading.timestamp + offsetFromUTC) / 1000)));
+            if (use_best_glucose) {
+                this.dictionary.addUint32(RECORD_TIME_KEY, (int) (((dg.timestamp + offsetFromUTC) / 1000)));
+            } else {
+                this.dictionary.addUint32(RECORD_TIME_KEY, (int) (((this.bgReading.timestamp + offsetFromUTC) / 1000)));
+            }
 
             if (getBooleanValue("pebble_show_delta")) {
                 if (no_signal) {
@@ -389,6 +446,7 @@ public class PebbleDisplayTrendOld extends PebbleDisplayAbstract {
         this.dictionary.remove(PHONE_TIME_KEY);
         this.dictionary.remove(RECORD_TIME_KEY);
         this.dictionary.remove(UPLOADER_BATTERY_KEY);
+        this.dictionary.remove(VIBE_KEY);
     }
 
 
@@ -408,7 +466,13 @@ public class PebbleDisplayTrendOld extends PebbleDisplayAbstract {
 
                             if (d) Log.i(TAG, "sendData: messageInTransit= " + messageInTransit + ", transactionFailed= " + transactionFailed + ", sendStep= " + sendStep);
                             if (sendStep == 0 && !messageInTransit && !transactionOk && !transactionFailed) {
-                                this.bgReading = BgReading.last();
+
+                                if (use_best_glucose) {
+                                    this.dg = BestGlucose.getDisplayGlucose();
+                                } else {
+                                    this.bgReading = BgReading.last();
+                                    }
+
                                 sendingData = true;
                                 buildDictionary();
                                 sendDownload();
@@ -459,7 +523,9 @@ public class PebbleDisplayTrendOld extends PebbleDisplayAbstract {
 
 
     public String getBgDelta() {
-        return this.bgGraphBuilder.unitizedDeltaString(getBooleanValue("pebble_show_delta_units"), true);
+        final boolean show_delta_units = getBooleanValue("pebble_show_delta_units");
+        return (use_best_glucose) ? (show_delta_units ? dg.unitized_delta : dg.unitized_delta_no_units)
+                : this.bgGraphBuilder.unitizedDeltaString(show_delta_units, true);
     }
 
 

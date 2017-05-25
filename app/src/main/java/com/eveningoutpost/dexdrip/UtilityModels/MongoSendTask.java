@@ -2,66 +2,162 @@ package com.eveningoutpost.dexdrip.UtilityModels;
 
 import android.content.Context;
 import android.os.AsyncTask;
-import com.eveningoutpost.dexdrip.Models.UserError.Log;
 
+import com.eveningoutpost.dexdrip.Home;
+import com.eveningoutpost.dexdrip.InfluxDB.InfluxDBUploader;
 import com.eveningoutpost.dexdrip.Models.BgReading;
+import com.eveningoutpost.dexdrip.Models.BloodTest;
 import com.eveningoutpost.dexdrip.Models.Calibration;
+import com.eveningoutpost.dexdrip.Models.JoH;
+import com.eveningoutpost.dexdrip.Models.Treatments;
+import com.eveningoutpost.dexdrip.Models.UserError.Log;
 import com.eveningoutpost.dexdrip.Services.SyncService;
+import com.eveningoutpost.dexdrip.xdrip;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Created by stephenblack on 12/19/14.
+ * Created by Emma Black on 12/19/14.
  */
+
+// TODO unify treatment handling
+// TODO refactor with more appropriate name
+
 public class MongoSendTask extends AsyncTask<String, Void, Void> {
-        private Context context;
-        public List<BgSendQueue> bgsQueue = new ArrayList<BgSendQueue>();
-        public List<CalibrationSendQueue> calibrationsQueue = new ArrayList<CalibrationSendQueue>();
+    public static Exception exception;
+    private static final String TAG = MongoSendTask.class.getSimpleName();
+    public static final String BACKFILLING_BOOSTER = "backfilling-nightscout";
 
-        private Exception exception;
-        private static final String TAG = MongoSendTask.class.getSimpleName();
+    public MongoSendTask(Context pContext) {
+    }
 
-        public MongoSendTask(Context pContext) {
-            calibrationsQueue = CalibrationSendQueue.mongoQueue();
-            bgsQueue = BgSendQueue.mongoQueue();
-            context = pContext;
-        }
+    public Void doInBackground(String... urls) {
+        try {
+            final List<Long> circuits = new ArrayList<>();
+            final List<String> types = new ArrayList<>();
 
-        public Void doInBackground(String... urls) {
-            try {
-                List<BgReading> bgReadings = new ArrayList<BgReading>();
-                List<Calibration> calibrations = new ArrayList<Calibration>();
-                for (CalibrationSendQueue job : calibrationsQueue) {
-                    calibrations.add(job.calibration);
+            types.add(BgReading.class.getSimpleName());
+            types.add(Calibration.class.getSimpleName());
+            types.add(BloodTest.class.getSimpleName());
+
+            if (Home.getPreferencesBooleanDefaultFalse("cloud_storage_mongodb_enable")) {
+                circuits.add(UploaderQueue.MONGO_DIRECT);
+            }
+            if (Home.getPreferencesBooleanDefaultFalse("cloud_storage_api_enable")) {
+                if ((Home.getPreferencesBoolean("cloud_storage_api_use_mobile", true) || (JoH.isLANConnected()))) {
+                    circuits.add(UploaderQueue.NIGHTSCOUT_RESTAPI);
+                } else {
+                    Log.e(TAG, "Skipping Nightscout upload due to mobile data only");
                 }
-                for (BgSendQueue job : bgsQueue) {
-                    bgReadings.add(job.bgReading);
-                }
+            }
+            if (Home.getPreferencesBooleanDefaultFalse("cloud_storage_influxdb_enable")) {
+                circuits.add(UploaderQueue.INFLUXDB_RESTAPI);
+            }
 
-                if(bgReadings.size() + calibrations.size() > 0) {
-                	Log.i(TAG, "uoader.upload called " + bgReadings.size());
-                    NightscoutUploader uploader = new NightscoutUploader(context);
-                    boolean uploadStatus = uploader.upload(bgReadings, calibrations, calibrations);
-                    if (uploadStatus) {
-                        for (CalibrationSendQueue calibration : calibrationsQueue) {
-                            calibration.markMongoSuccess();
-                        }
-                        for (BgSendQueue bgReading : bgsQueue) {
-                            bgReading.markMongoSuccess();
+
+            for (long THIS_QUEUE : circuits) {
+
+                final List<BgReading> bgReadings = new ArrayList<>();
+                final List<Calibration> calibrations = new ArrayList<>();
+                final List<BloodTest> bloodtests = new ArrayList<>();
+                final List<UploaderQueue> items = new ArrayList<>();
+
+                for (String type : types) {
+                    final List<UploaderQueue> bgups = UploaderQueue.getPendingbyType(type, THIS_QUEUE);
+                    if (bgups != null) {
+                        for (UploaderQueue up : bgups) {
+                            switch (up.action) {
+                                case "insert":
+                                case "update":
+                                case "create":
+                                    items.add(up);
+                                    if (type.equals(BgReading.class.getSimpleName())) {
+                                        final BgReading this_bg = BgReading.byid(up.reference_id);
+                                        if (this_bg != null) {
+                                            bgReadings.add(this_bg);
+                                        } else {
+                                            Log.wtf(TAG, "BgReading with ID: " + up.reference_id + " appears to have been deleted");
+                                        }
+                                    } else if (type.equals(Calibration.class.getSimpleName())) {
+                                        final Calibration this_cal = Calibration.byid(up.reference_id);
+                                        if (this_cal != null) {
+                                            calibrations.add(this_cal);
+                                        } else {
+                                            Log.wtf(TAG, "Calibration with ID: " + up.reference_id + " appears to have been deleted");
+                                        }
+
+                                    } else if (type.equals(BloodTest.class.getSimpleName())) {
+                                        final BloodTest this_bt = BloodTest.byid(up.reference_id);
+                                        if (this_bt != null) {
+                                            bloodtests.add(this_bt);
+                                        } else {
+                                            Log.wtf(TAG, "Bloodtest with ID: " + up.reference_id + " appears to have been deleted");
+                                        }
+                                    }
+                                    break;
+                                case "delete":
+                                    // items.add(up);
+                                    if (up.reference_uuid != null) {
+                                        Log.d(TAG, UploaderQueue.getCircuitName(THIS_QUEUE) + " delete not yet implemented: " + up.reference_uuid);
+                                        up.completed(THIS_QUEUE); // mark as completed so as not to tie up the queue for now
+                                    }
+                                    break;
+                                default:
+                                    Log.e(TAG, "Unsupported operation type for " + type + " " + up.action);
+                                    break;
+                            }
                         }
                     }
                 }
-            } catch (Exception e) {
-            	Log.e(TAG, "caught exception", e);
-                this.exception = e;
-                return null;
+
+                if ((bgReadings.size() > 0) || (calibrations.size() > 0) || (bloodtests.size() > 0)
+                        || (UploaderQueue.getPendingbyType(Treatments.class.getSimpleName(), THIS_QUEUE, 1).size() > 0)) {
+
+                    Log.d(TAG, UploaderQueue.getCircuitName(THIS_QUEUE) + " Processing: " + bgReadings.size() + " BgReadings and " + calibrations.size() + " Calibrations");
+                    boolean uploadStatus = false;
+
+                    if (THIS_QUEUE == UploaderQueue.MONGO_DIRECT) {
+                        final NightscoutUploader uploader = new NightscoutUploader(xdrip.getAppContext());
+                        uploadStatus = uploader.uploadMongo(bgReadings, calibrations, calibrations);
+                    } else if (THIS_QUEUE == UploaderQueue.NIGHTSCOUT_RESTAPI) {
+                        final NightscoutUploader uploader = new NightscoutUploader(xdrip.getAppContext());
+                        uploadStatus = uploader.uploadRest(bgReadings, bloodtests, calibrations);
+                    } else if (THIS_QUEUE == UploaderQueue.INFLUXDB_RESTAPI) {
+                        final InfluxDBUploader influxDBUploader = new InfluxDBUploader(xdrip.getAppContext());;
+                        uploadStatus = influxDBUploader.upload(bgReadings, calibrations, calibrations);
+                    }
+
+                    // TODO some kind of fail counter?
+                    if (uploadStatus) {
+                        for (UploaderQueue up : items) {
+                            up.completed(THIS_QUEUE); // approve all types for this queue
+                        }
+                        Log.d(TAG, UploaderQueue.getCircuitName(THIS_QUEUE) + " Marking: " + items.size() + " Items as successful");
+
+                        if (PersistentStore.getBoolean(BACKFILLING_BOOSTER)) {
+                            Log.d(TAG,"Scheduling boosted repeat query");
+                            SyncService.startSyncService(2000);
+                        }
+
+                    }
+
+
+                } else {
+                    Log.d(TAG, "Nothing to upload for: " + UploaderQueue.getCircuitName(THIS_QUEUE));
+                    if (PersistentStore.getBoolean(BACKFILLING_BOOSTER)) {
+                        PersistentStore.setBoolean(BACKFILLING_BOOSTER, false);
+                        Log.d(TAG,"Switched off backfilling booster");
+                    }
+                }
+
             }
+        } catch (Exception e) {
+            Log.e(TAG, "caught exception", e);
+            exception = e;
             return null;
         }
-
-//        protected void onPostExecute(RSSFeed feed) {
-//            // TODO: check this.exception
-//            // TODO: do something with the feed
-//        }
+        return null;
     }
+
+}

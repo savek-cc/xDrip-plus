@@ -1,8 +1,10 @@
 package com.eveningoutpost.dexdrip.Tables;
 
+import android.app.AlertDialog;
 import android.app.ListActivity;
 import android.content.Context;
-import android.database.Cursor;
+import android.content.DialogInterface;
+import android.graphics.Color;
 import android.os.Bundle;
 import android.support.v4.widget.DrawerLayout;
 import android.view.LayoutInflater;
@@ -11,17 +13,18 @@ import android.view.ViewGroup;
 import android.widget.BaseAdapter;
 import android.widget.TextView;
 
-import com.activeandroid.Cache;
 import com.eveningoutpost.dexdrip.Models.Calibration;
+import com.eveningoutpost.dexdrip.Models.JoH;
 import com.eveningoutpost.dexdrip.NavigationDrawerFragment;
 import com.eveningoutpost.dexdrip.R;
+import com.eveningoutpost.dexdrip.UtilityModels.BgGraphBuilder;
 
 import java.util.ArrayList;
 import java.util.List;
 
 
 public class CalibrationDataTable extends ListActivity implements NavigationDrawerFragment.NavigationDrawerCallbacks {
-    private String menu_name = "Calibration Data Table";
+    private static final String menu_name = "Calibration Data Table";
     private NavigationDrawerFragment mNavigationDrawerFragment;
 
     @Override
@@ -71,7 +74,7 @@ public class CalibrationDataTable extends ListActivity implements NavigationDraw
         private final Context           context;
         private final List<Calibration> calibrations;
 
-        public CalibrationDataCursorAdapter(Context context, List<Calibration> calibrations) {
+        CalibrationDataCursorAdapter(Context context, List<Calibration> calibrations) {
             this.context = context;
             if(calibrations == null)
                 calibrations = new ArrayList<>();
@@ -79,7 +82,7 @@ public class CalibrationDataTable extends ListActivity implements NavigationDraw
             this.calibrations = calibrations;
         }
 
-        public View newView(Context context, ViewGroup parent) {
+        View newView(Context context, ViewGroup parent) {
             final View view = LayoutInflater.from(context).inflate(R.layout.raw_data_list_item, parent, false);
 
             final CalibrationDataCursorAdapterViewHolder holder = new CalibrationDataCursorAdapterViewHolder(view);
@@ -88,12 +91,51 @@ public class CalibrationDataTable extends ListActivity implements NavigationDraw
             return view;
         }
 
-        public void bindView(View view, Context context, Calibration calibration) {
+        void bindView(View view, final Context context, final Calibration calibration) {
             final CalibrationDataCursorAdapterViewHolder tag = (CalibrationDataCursorAdapterViewHolder) view.getTag();
-            tag.raw_data_id.setText(Double.toString(calibration.bg));
-            tag.raw_data_value.setText(Double.toString(calibration.estimate_raw_at_time_of_calibration));
-            tag.raw_data_slope.setText(Double.toString(calibration.slope));
-            tag.raw_data_timestamp.setText(Double.toString(calibration.intercept));
+            tag.raw_data_id.setText(JoH.qs(calibration.bg, 4) + "    "+ BgGraphBuilder.unitized_string_static(calibration.bg));
+            tag.raw_data_value.setText("raw: " + JoH.qs(calibration.estimate_raw_at_time_of_calibration, 4));
+            tag.raw_data_slope.setText("slope: " + JoH.qs(calibration.slope, 4) + " intercept: " + JoH.qs(calibration.intercept, 4));
+            tag.raw_data_timestamp.setText(JoH.dateTimeText(calibration.timestamp) + "  (" + JoH.dateTimeText(calibration.raw_timestamp) + ")");
+
+            if (calibration.isNote()) {
+                // green note
+                view.setBackgroundColor(Color.parseColor("#004400"));
+            } else if (!calibration.isValid()) {
+                // red invalid/cancelled/overridden
+                view.setBackgroundColor(Color.parseColor("#660000"));
+            } else {
+                // normal grey
+                view.setBackgroundColor(Color.parseColor("#212121"));
+            }
+
+            view.setLongClickable(true);
+            view.setOnLongClickListener(new View.OnLongClickListener() {
+                @Override
+                public boolean onLongClick(View v) {
+                    DialogInterface.OnClickListener dialogClickListener = new DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(DialogInterface dialog, int which) {
+                            switch (which){
+                                case DialogInterface.BUTTON_POSITIVE:
+                                    calibration.invalidate();
+                                    notifyDataSetChanged();
+                                    break;
+
+                                case DialogInterface.BUTTON_NEGATIVE:
+                                    break;
+                            }
+                        }
+                    };
+
+                    AlertDialog.Builder builder = new AlertDialog.Builder(context);
+                    builder.setMessage("Disable this calibration?\nFlagged calibrations will no longer have an effect.").setPositiveButton("Yes", dialogClickListener)
+                            .setNegativeButton("No", dialogClickListener).show();
+                    return true;
+                }
+            });
+
+
         }
 
         @Override

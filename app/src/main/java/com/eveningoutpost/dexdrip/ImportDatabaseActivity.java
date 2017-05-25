@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.AlertDialog;
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.database.sqlite.SQLiteDatabase;
@@ -11,23 +12,30 @@ import android.database.sqlite.SQLiteException;
 import android.os.AsyncTask;
 import android.os.Bundle;
 import android.os.Handler;
+import android.preference.PreferenceManager;
+import android.support.annotation.NonNull;
 import android.support.v4.app.ActivityCompat;
 import android.support.v4.content.ContextCompat;
+import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.ListView;
 
+import com.eveningoutpost.dexdrip.Models.JoH;
 import com.eveningoutpost.dexdrip.UtilityModels.CollectionServiceStarter;
 import com.eveningoutpost.dexdrip.utils.DatabaseUtil;
 import com.eveningoutpost.dexdrip.utils.FileUtils;
 import com.eveningoutpost.dexdrip.utils.ListActivityWithMenu;
+import com.eveningoutpost.dexdrip.wearintegration.WatchUpdaterService;
 
 import java.io.File;
 import java.io.FileFilter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+
+import static com.eveningoutpost.dexdrip.Home.startWatchUpdaterService;
 
 public class ImportDatabaseActivity extends ListActivityWithMenu {
     private final static String TAG = ImportDatabaseActivity.class.getSimpleName();
@@ -36,11 +44,14 @@ public class ImportDatabaseActivity extends ListActivityWithMenu {
     private Handler mHandler;
     private ArrayList<String> databaseNames;
     private ArrayList<File> databases;
+    private final static int MY_PERMISSIONS_REQUEST_STORAGE = 132;
+    private SharedPreferences mPrefs;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         setTheme(R.style.OldAppTheme); // or null actionbar
         super.onCreate(savedInstanceState);
+        mPrefs = PreferenceManager.getDefaultSharedPreferences(getApplicationContext());
         mHandler = new Handler();
         setContentView(R.layout.activity_import_db);
 
@@ -54,9 +65,10 @@ public class ImportDatabaseActivity extends ListActivityWithMenu {
             sortDatabasesAlphabetically();
             showDatabasesInList();
         } else if (permissionCheck != PackageManager.PERMISSION_GRANTED) {
+            JoH.static_toast_long("Need permission for saved files");
             ActivityCompat.requestPermissions(this,
                     new String[]{Manifest.permission.READ_EXTERNAL_STORAGE},
-                    0);
+                    MY_PERMISSIONS_REQUEST_STORAGE);
         } else {
             postImportDB("\'xdrip\' is not a directory... aborting.");
         }
@@ -137,8 +149,9 @@ public class ImportDatabaseActivity extends ListActivityWithMenu {
                 return pathname.getPath().endsWith(".sqlite");
             }
         });
-
-        Collections.addAll(databases, files);
+        if ((databases != null) && (files != null)) {
+            Collections.addAll(databases, files);
+        }
     }
 
     @Override
@@ -173,6 +186,18 @@ public class ImportDatabaseActivity extends ListActivityWithMenu {
         return menu_name;
     }
 
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == MY_PERMISSIONS_REQUEST_STORAGE) {
+            if (grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                generateDBGui();
+            } else {
+                finish();
+            }
+        }
+    }
+
     public int getDBVersion() {
 
         int version = -1;
@@ -200,6 +225,9 @@ public class ImportDatabaseActivity extends ListActivityWithMenu {
     }
 
     protected void postImportDB(String result) {
+
+        startWatchUpdaterService(this, WatchUpdaterService.ACTION_RESET_DB, TAG);
+
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
         builder.setPositiveButton(R.string.ok, new DialogInterface.OnClickListener() {
             public void onClick(DialogInterface dialog, int id) {

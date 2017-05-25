@@ -15,6 +15,7 @@ import android.preference.PreferenceManager;
 import android.support.v4.app.NotificationCompat;
 
 import com.eveningoutpost.dexdrip.EditAlertActivity;
+import com.eveningoutpost.dexdrip.GcmActivity;
 import com.eveningoutpost.dexdrip.Home;
 import com.eveningoutpost.dexdrip.Models.ActiveBgAlert;
 import com.eveningoutpost.dexdrip.Models.AlertType;
@@ -23,17 +24,21 @@ import com.eveningoutpost.dexdrip.Models.UserError.Log;
 import com.eveningoutpost.dexdrip.R;
 import com.eveningoutpost.dexdrip.Services.SnoozeOnNotificationDismissService;
 import com.eveningoutpost.dexdrip.SnoozeActivity;
+import com.eveningoutpost.dexdrip.UtilityModels.pebble.PebbleWatchSync;
+import com.eveningoutpost.dexdrip.wearintegration.WatchUpdaterService;
 
 import java.io.IOException;
 import java.util.Date;
 
-// A helper class to create the mediaplayer on the UI thread. 
+import static com.eveningoutpost.dexdrip.Home.startWatchUpdaterService;
+
+// A helper class to create the mediaplayer on the UI thread.
 // This is needed in order for the callbackst to work.
 class MediaPlayerCreaterHelper {
     
     private final static String TAG = AlertPlayer.class.getSimpleName();
 
-    Object lock1_ = new Object();
+    final Object lock1_ = new Object();
     boolean mplayerCreated_ = false;
     MediaPlayer mediaPlayer_ = null;
     
@@ -88,8 +93,8 @@ public class AlertPlayer {
 
     private final static String TAG = AlertPlayer.class.getSimpleName();
     private MediaPlayer mediaPlayer;
-    int volumeBeforeAlert;
-    int volumeForThisAlert;
+    int volumeBeforeAlert = -1;
+    int volumeForThisAlert = -1;
 
     final static int ALERT_PROFILE_HIGH = 1;
     final static int ALERT_PROFILE_ASCENDING = 2;
@@ -131,31 +136,59 @@ public class AlertPlayer {
     }
 
     public synchronized void stopAlert(Context ctx, boolean ClearData, boolean clearIfSnoozeFinished) {
+        stopAlert(ctx, ClearData, clearIfSnoozeFinished, true);
+    }
+
+    public synchronized void stopAlert(Context ctx, boolean ClearData, boolean clearIfSnoozeFinished, boolean cancelNotification) {
 
         Log.d(TAG, "stopAlert: stop called ClearData " + ClearData + "  ThreadID " + Thread.currentThread().getId());
         if (ClearData) {
             ActiveBgAlert.ClearData();
         }
-        if(clearIfSnoozeFinished) {
+        if (clearIfSnoozeFinished) {
             ActiveBgAlert.ClearIfSnoozeFinished();
         }
-        notificationDismiss(ctx);
+        if (cancelNotification) {
+            notificationDismiss(ctx);
+        }
         if (mediaPlayer != null) {
             mediaPlayer.stop();
             mediaPlayer.release();
             mediaPlayer = null;
         }
+        revertCurrentVolume(ctx);
     }
 
-    public synchronized  void Snooze(Context ctx, int repeatTime) {
+    //  default signature for user initiated interactive snoozes only
+    public synchronized void Snooze(Context ctx, int repeatTime) {
+        Snooze(ctx, repeatTime, true);
+        if (Home.getPreferencesBooleanDefaultFalse("bg_notifications_watch") ) {
+            startWatchUpdaterService(ctx, WatchUpdaterService.ACTION_SNOOZE_ALERT, TAG, "repeatTime", "" + repeatTime);
+        }
+    }
+
+    public synchronized void Snooze(Context ctx, int repeatTime, boolean from_interactive) {
         Log.i(TAG, "Snooze called repeatTime = " + repeatTime);
         stopAlert(ctx, false, false);
         ActiveBgAlert activeBgAlert = ActiveBgAlert.getOnly();
-        if (activeBgAlert  == null) {
-            Log.e(TAG, "Error, snooze was called but no alert is active. alert was probably removed in ui ");
+        if (activeBgAlert == null) {
+            Log.e(TAG, "Error, snooze was called but no alert is active.");
+            if (from_interactive) GcmActivity.sendSnoozeToRemote();
             return;
         }
+        if (repeatTime == -1) {
+            // try to work out default
+            AlertType alert = ActiveBgAlert.alertTypegetOnly();
+            if (alert != null) {
+                repeatTime = alert.default_snooze;
+                Log.d(TAG, "Selecting default snooze time: " + repeatTime);
+            } else {
+                repeatTime = 30; // pick a number if we cannot even find the default
+                Log.e(TAG, "Cannot even find default snooze time so going with: " + repeatTime);
+            }
+        }
         activeBgAlert.snooze(repeatTime);
+        if (from_interactive) GcmActivity.sendSnoozeToRemote();
     }
 
     public synchronized  void PreSnooze(Context ctx, String uuid, int repeatTime) {
@@ -183,7 +216,7 @@ public class AlertPlayer {
             return;
         }
         if(activeBgAlert.ready_to_alarm()) {
-            stopAlert(ctx, false, false);
+            stopAlert(ctx, false, false, false); // also don't cancel notification
 
             int timeFromStartPlaying = activeBgAlert.getUpdatePlayTime();
             AlertType alert = AlertType.get_alert(activeBgAlert.alert_uuid);
@@ -201,19 +234,13 @@ public class AlertPlayer {
 
     }
 
-    
+
     private boolean setDataSource(Context context, MediaPlayer mp, Uri uri) {
         try {
             mp.setDataSource(context, uri);
             return true;
-        } catch (IOException ex) {
-            Log.e(TAG, "create failed:", ex);
-            // fall through
-        } catch (IllegalArgumentException ex) {
-            Log.e(TAG, "create failed:", ex);
-            // fall through
-        } catch (SecurityException ex) {
-            Log.e(TAG, "create failed:", ex);
+        } catch (IOException | NullPointerException | IllegalArgumentException | SecurityException ex) {
+            Log.e(TAG, "setDataSource create failed:", ex);
             // fall through
         }
         return false;
@@ -288,14 +315,7 @@ public class AlertPlayer {
                     @Override
                     public void onCompletion(MediaPlayer mp) {
                         Log.i(TAG, "PlayFile: onCompletion called (finished playing) ");
-                        AudioManager manager = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
-                        int currentVolume = manager.getStreamVolume(AudioManager.STREAM_MUSIC);
-                        Log.i(TAG, "After playing volumeBeforeAlert " + volumeBeforeAlert + " volumeForThisAlert " + volumeForThisAlert
-                                + " currentVolume " + currentVolume);
-                        if (volumeForThisAlert == currentVolume) {
-                            // If the user has changed the volume, don't change it again.
-                            manager.setStreamVolume(AudioManager.STREAM_MUSIC, volumeBeforeAlert, 0);
-                        }
+                        revertCurrentVolume(ctx);
                     }
                 });
                 Log.i(TAG, "PlayFile: calling mediaPlayer.start() ");
@@ -311,6 +331,20 @@ public class AlertPlayer {
             Log.wtf(TAG, "PlayFile: Starting an alert failed, what should we do !!!");
         }
     }
+    
+    private void revertCurrentVolume(final Context ctx) {
+        AudioManager manager = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
+        int currentVolume = manager.getStreamVolume(AudioManager.STREAM_MUSIC);
+        Log.i(TAG, "revertCurrentVolume volumeBeforeAlert " + volumeBeforeAlert + " volumeForThisAlert " + volumeForThisAlert
+                + " currentVolume " + currentVolume);
+        if (volumeForThisAlert == currentVolume && (volumeBeforeAlert != -1) && (volumeForThisAlert != -1)) {
+            // If the user has changed the volume, don't change it again.
+            manager.setStreamVolume(AudioManager.STREAM_MUSIC, volumeBeforeAlert, 0);
+        }
+        volumeBeforeAlert = -1;
+        volumeForThisAlert = - 1;
+        
+    }
 
     private PendingIntent notificationIntent(Context ctx, Intent intent){
         return PendingIntent.getActivity(ctx, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT);
@@ -318,6 +352,7 @@ public class AlertPlayer {
     }
     private PendingIntent snoozeIntent(Context ctx){
         Intent intent = new Intent(ctx, SnoozeOnNotificationDismissService.class);
+        intent.putExtra("alertType", "bg_alerts");
         return PendingIntent.getService(ctx, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT);
     }
 
@@ -377,14 +412,17 @@ public class AlertPlayer {
         }
 
         String title = bgValue + " " + alert.name;
-        String content = "BG LEVEL ALERT: " + bgValue;
+        String content = "BG LEVEL ALERT: " + bgValue + "  (@" + JoH.hourMinuteString() + ")";
         Intent intent = new Intent(ctx, SnoozeActivity.class);
 
-        NotificationCompat.Builder  builder = new NotificationCompat.Builder(ctx)
+        boolean localOnly = (Home.get_forced_wear() && PersistentStore.getBoolean("bg_notifications_watch"));
+        Log.d(TAG, "NotificationCompat.Builder localOnly=" + localOnly);
+        NotificationCompat.Builder  builder = new NotificationCompat.Builder(ctx)//KS Notification
             .setSmallIcon(R.drawable.ic_action_communication_invert_colors_on)
             .setContentTitle(title)
             .setContentText(content)
             .setContentIntent(notificationIntent(ctx, intent))
+            .setLocalOnly(localOnly)
             .setDeleteIntent(snoozeIntent(ctx));
 
         if (profile != ALERT_PROFILE_VIBRATE_ONLY && profile != ALERT_PROFILE_SILENT) {
@@ -424,8 +462,14 @@ public class AlertPlayer {
         }
         Log.ueh("Alerting",content);
         NotificationManager mNotifyMgr = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
-        mNotifyMgr.cancel(Notifications.exportAlertNotificationId);
+        //mNotifyMgr.cancel(Notifications.exportAlertNotificationId); // this appears to confuse android wear version 2.0.0.141773014.gms even though it shouldn't - can we survive without this?
         mNotifyMgr.notify(Notifications.exportAlertNotificationId, builder.build());
+
+        if (Home.getPreferencesBooleanDefaultFalse("broadcast_to_pebble") && (Home.getPreferencesBooleanDefaultFalse("pebble_vibe_alerts"))) {
+            if (JoH.ratelimit("pebble_vibe_start", 59)) {
+                ctx.startService(new Intent(ctx, PebbleWatchSync.class));
+            }
+        }
     }
 
     private void notificationDismiss(Context ctx) {

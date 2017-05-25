@@ -10,8 +10,64 @@
             android:entries="@array/DexCollectionMethods"
             android:entryValues="@array/DexCollectionMethodValues"
             android:key="dex_collection_method"
-            android:summary="How are you going to receive data from your Dexcom/Transmitter?"
+            android:summary="@string/how_receive_data"
             android:title="@string/hardware_data_source" />
+        <PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+            android:icon="@drawable/ic_nfc_grey600_48dp"
+            android:key="xdrip_plus_nfc_settings"
+            android:summary="@string/nfc_options"
+            android:title="@string/nfc_scan_features">
+            <SwitchPreference
+                android:defaultValue="false"
+                android:key="use_nfc_scan"
+                android:summary="@string/allow_sensor_scanning"
+                android:title="@string/use_nfc_feature" />
+            <CheckBoxPreference
+                android:defaultValue="true"
+                android:key="nfc_show_age"
+                android:summaryOff="@string/show_expiry_time"
+                android:summaryOn="@string/show_sensor_age"
+                android:title="@string/sensor_age_or_expiry" />
+            <EditTextPreference
+                android:defaultValue="14.5"
+                android:inputType="numberDecimal"
+                android:key="nfc_expiry_days"
+                android:title="@string/change_sensor_total_days" />
+            <CheckBoxPreference
+                android:defaultValue="false"
+                android:dependency="use_nfc_scan"
+                android:key="nfc_scan_homescreen"
+                android:summaryOff="@string/nfc_scanning_xdrip_open"
+                android:summaryOn="@string/nfc_scanning_launcher"
+                android:title="@string/scan_when_app_closed" />
+            <CheckBoxPreference
+                android:defaultValue="true"
+                android:dependency="use_nfc_scan"
+                android:key="nfc_scan_vibrate"
+                android:summary="@string/vibrate_scanning_status" />
+            <CheckBoxPreference
+                android:defaultValue="false"
+                android:dependency="engineering_mode"
+                android:key="nfc_scan_beep"
+                android:summary="@string/beep_when_scanning_within_app" />
+            <CheckBoxPreference
+                android:defaultValue="true"
+                android:dependency="use_nfc_scan"
+                android:key="use_nfc_multiblock"
+                android:summary="@string/use_multi_block" />
+            <CheckBoxPreference
+                android:defaultValue="true"
+                android:dependency="use_nfc_scan"
+                android:key="use_nfc_any_tag"
+                android:summary="@string/use_any_tag" />
+            <EditTextPreference
+                android:defaultValue=""
+                android:dependency="engineering_mode"
+                android:key="nfc_test_diagnostic"
+                android:summary="@string/low_level_value" />
+
+        </PreferenceScreen>
+
         <EditTextPreference
             android:defaultValue="SM00000000"
             android:key="share_key"
@@ -29,35 +85,41 @@
             android:key="dex_txid"
             android:maxLines="1"
             android:singleLine="true"
-            android:summary="ID of your Dexcom Transmitter, eg 12AB3"
+            android:summary="@string/transmitter_id"
             android:title="@string/dexcom_transmitter_id" />
 
-        <CheckBoxPreference
-            android:defaultValue="false"
-            android:key="run_service_in_foreground"
-            android:summary="@string/shows_a_persistent_notification"
-            android:title="@string/run_collector_in_foreground" />
 
-        <CheckBoxPreference
-            android:defaultValue="false"
-            android:key="run_ble_scan_constantly"
-            android:summary="Some devices work better when scanning constantly, others do not. If reading is reliable when this setting is not selected, you should have improved battery life. Turn this setting on if you are missing readings at high rates and unexpected times."
-            android:title="Scan for G5 constantly" />
-        <CheckBoxPreference
-            android:defaultValue="false"
-            android:key="run_G5_ble_tasks_on_uithread"
-            android:summary="This is crucial for some Android devices to properly connect, but can cause missed readings when other UI intensive activities are in use."
-            android:title="Force G5 to UI Thread" />
-        <CheckBoxPreference
-            android:defaultValue="false"
-            android:key="always_get_new_keys"
-            android:summary="This will attempt a full authentication each read attempt. Redundant if Unbond before each read is also selected."
-            android:title="Authenticate G5 before each read" />
-        <CheckBoxPreference
-            android:defaultValue="false"
-            android:key="always_unbond_G5"
-            android:summary="This will remove the G5 from your device's paired device list, and attempt a full authentication and bonding with each read attempt."
-            android:title="Unbond G5 before each read" />
+        <PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+            android:key="xdrip_plus_g5_extra_settings"
+            android:summary="@string/advanced_g5_settings"
+            android:title="@string/g5_debug_settings">
+            <CheckBoxPreference
+                android:defaultValue="false"
+                android:key="run_ble_scan_constantly"
+                android:summary="@string/g5_scan_constantly"
+                android:title="@string/scan_for_g5_constantly" />
+            <CheckBoxPreference
+                android:defaultValue="false"
+                android:key="run_G5_ble_tasks_on_uithread"
+                android:summary="@string/g5_force_ui_thread"
+                android:title="@string/force_g5_ui_thread" />
+            <CheckBoxPreference
+                android:defaultValue="true"
+                android:key="always_get_new_keys"
+                android:summary="@string/g5_full_authentification"
+                android:title="@string/authentificate_before_reading" />
+            <CheckBoxPreference
+                android:defaultValue="false"
+                android:key="always_unbond_G5"
+                android:summary="@string/g5_remove_before_read"
+                android:title="@string/unbond_g5_before_read" />
+            <CheckBoxPreference
+                android:defaultValue="false"
+                android:dependency="engineering_mode"
+                android:key="g5_non_raw_method"
+                android:summary="@string/g5_experimental_mode"
+                android:title="@string/use_calibrated_data" />
+        </PreferenceScreen>
 
         <EditTextPreference
             android:defaultValue=""
@@ -65,6 +127,6 @@
             android:dialogTitle="@string/wifi_recievers_dialog_title"
             android:inputType="textUri"
             android:key="wifi_recievers_addresses"
-            android:title="@string/list_of_receivers"/>
+            android:title="@string/list_of_receivers" />
     </PreferenceCategory>
 </PreferenceScreen>

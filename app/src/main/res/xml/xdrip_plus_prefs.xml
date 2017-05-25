@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android">
+
     <PreferenceCategory
         android:key="xdrip_plus_category"
-        android:title="@string/xdrip_plus_extra_settings"/>
+        android:title="@string/xdrip_plus_extra_settings" />
     <PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
         android:icon="@drawable/ic_chart_areaspline_grey600_48dp"
         android:key="xdrip_plus_display_settings"
@@ -187,19 +188,90 @@
                         app:colorpicker_selectNoneButtonText="@string/revert_to_default"
                         app:colorpicker_showHex="false" />
                 </PreferenceCategory>
+
+                <PreferenceCategory
+                    android:key="xdrip_plus_display_colorset8"
+                    android:title="Plugins and Features">
+
+                    <com.eveningoutpost.dexdrip.UtilityModels.ColorPicker
+                        android:defaultValue="#8a6b4c33"
+                        android:dependency="plugin_plot_on_graph"
+                        android:key="color_secondary_glucose_value"
+                        android:title="@string/secondary_plugin_glucose_value"
+                        app:colorpicker_noneSelectedSummaryText="@string/default_color_selected"
+                        app:colorpicker_selectNoneButtonText="@string/revert_to_default"
+                        app:colorpicker_showHex="false" />
+
+                    <com.eveningoutpost.dexdrip.UtilityModels.ColorPicker
+                        android:defaultValue="#3e29937b"
+                        android:key="color_step_counter1"
+                        android:dependency="broadcast_to_pebble"
+                        android:title="@string/step_counter_1st_color"
+                        app:colorpicker_noneSelectedSummaryText="@string/default_color_selected"
+                        app:colorpicker_selectNoneButtonText="@string/revert_to_default"
+                        app:colorpicker_showHex="false" />
+
+                    <com.eveningoutpost.dexdrip.UtilityModels.ColorPicker
+                        android:defaultValue="#3c72c3c0"
+                        android:key="color_step_counter2"
+                        android:dependency="broadcast_to_pebble"
+                        android:title="@string/step_counter_2nd_color"
+                        app:colorpicker_noneSelectedSummaryText="@string/default_color_selected"
+                        app:colorpicker_selectNoneButtonText="@string/revert_to_default"
+                        app:colorpicker_showHex="false" />
+
+                    </PreferenceCategory>
+                <PreferenceCategory
+                    android:key="xdrip_plus_display_colorset9_android5plus"
+                    android:title="@string/flair_colors">
+
+                    <SwitchPreference
+                        android:defaultValue="false"
+                        android:key="use_flair_colors"
+                        android:switchTextOff="@string/short_off_text_for_switches"
+                        android:switchTextOn="@string/short_on_text_for_switches"
+                        android:title="@string/use_flair_colors"/>
+                    <com.eveningoutpost.dexdrip.UtilityModels.ColorPicker
+                        android:defaultValue="#00000000"
+                        android:key="color_upper_flair_bar"
+                        android:title="@string/upper_title_bar_flair"
+                        app:colorpicker_noneSelectedSummaryText="@string/default_color_selected"
+                        app:colorpicker_selectNoneButtonText="@string/revert_to_default"
+                        app:colorpicker_showHex="false" />
+
+                    <com.eveningoutpost.dexdrip.UtilityModels.ColorPicker
+                        android:defaultValue="#FF000000"
+                        android:key="color_lower_flair_bar"
+                        android:title="@string/lower_button_bar_falir"
+                        app:colorpicker_noneSelectedSummaryText="@string/default_color_selected"
+                        app:colorpicker_selectNoneButtonText="@string/revert_to_default"
+                        app:colorpicker_showHex="false" />
+
+                </PreferenceCategory>
             </PreferenceScreen>
 
             <SwitchPreference
                 android:defaultValue="false"
-                android:title="Force English Text"
-                android:summary="Do not use crowd-sourced local language text within xDrip+"
-                android:key="force_english">
-            </SwitchPreference>
+                android:key="force_english"
+                android:summary="@string/using_local_language"
+                android:summaryOn="@string/forcing_alternate_language"
+                android:switchTextOff="@string/short_off_text_for_switches"
+                android:switchTextOn="@string/short_on_text_for_switches"
+                android:title="@string/force_english_text" />
+            <ListPreference
+                android:defaultValue="en"
+                android:entries="@array/LocaleChoices"
+                android:entryValues="@array/LocaleChoicesValues"
+                android:key="forced_language"
+                android:summary="@string/need_alternate_language"
+                android:title="@string/chosse_language" />
 
             <SwitchPreference
                 android:defaultValue="true"
                 android:key="bg_compensate_noise"
                 android:summary="@string/try_to_work_around_noisy_readings"
+                android:switchTextOff="@string/short_off_text_for_switches"
+                android:switchTextOn="@string/short_on_text_for_switches"
                 android:title="\u26A0 Smooth sensor noise" />
             <CheckBoxPreference
                 android:defaultValue="true"
@@ -211,6 +283,11 @@
                 android:key="rewrite_history"
                 android:summary="@string/after_calibration_rewrite_history"
                 android:title="@string/rewrite_history" />
+            <CheckBoxPreference
+                android:defaultValue="false"
+                android:key="widget_range_lines"
+                android:summary="@string/show_range_on_widget"
+                android:title="@string/widget_range_lines" />
             <CheckBoxPreference
                 android:defaultValue="true"
                 android:key="show_graph_grid_time"
@@ -259,18 +336,29 @@
             <CheckBoxPreference
                 android:defaultValue="false"
                 android:key="bg_from_filtered"
-                android:summary="Delayed but more stable when noisy (not recommended)"
+                android:summary="@string/delayed_but_more_stable"
                 android:title="@string/glucose_number_from_filtered" />
             <CheckBoxPreference
                 android:defaultValue="false"
+                android:key="show_bwp"
+                android:summary="@string/display_calculations"
+                android:title="@string/show_bolus_wizard_preview" />
+            <CheckBoxPreference
+                android:defaultValue="false"
+                android:dependency="show_bwp"
                 android:key="always_show_bwp"
-                android:summary="Display Insulin/Carb calculations at all times"
-                android:title="Always show Bolus Wizard Preview" />
+                android:summary="@string/display_calculations_everytime"
+                android:title="@string/always_show_bolus_wizard_preview" />
             <CheckBoxPreference
                 android:defaultValue="true"
                 android:key="plus_extra_features"
-                android:summary="Show extra and alpha test features"
+                android:summary="@string/show_test_features"
                 android:title="@string/parakeet_and_extra_features" />
+            <CheckBoxPreference
+                android:defaultValue="true"
+                android:key="plus_show_reminders"
+                android:summary="@string/show_reminder_features"
+                android:title="@string/enable_reminder_features" />
 
         </PreferenceCategory>
     </PreferenceScreen>
@@ -286,24 +374,31 @@
         <PreferenceCategory
             android:key="xdrip_plus_profile_category"
             android:title="@string/xdrip_plus_prediction_settings">
+            <SwitchPreference
+                android:defaultValue="true"
+                android:key="simulations_enabled"
+                android:summary="@string/display_mathamatical_simulations"
+                android:switchTextOff="@string/short_off_text_for_switches"
+                android:switchTextOn="@string/short_on_text_for_switches"
+                android:title="@string/predictive_simulations" />
 
             <Preference
                 android:key="profile_carb_ratio_default"
                 android:summary="@string/grams_of_carbohydrate_one_unit_covers"
-                android:title="Carb Ratio">
+                android:title="@string/carb_ratio">
                 <intent
                     android:action="android.intent.action.MAIN"
                     android:targetClass="com.eveningoutpost.dexdrip.profileeditor.ProfileEditor"
-                    android:targetPackage="@string/local_target_package"/>
+                    android:targetPackage="@string/local_target_package" />
             </Preference>
             <Preference
                 android:key="profile_insulin_sensitivity_default"
                 android:summary="@string/glucose_drop_for_one_unit"
-                android:title="Insulin Sensitivity">
+                android:title="@string/insulin_sensitivity">
                 <intent
                     android:action="android.intent.action.MAIN"
                     android:targetClass="com.eveningoutpost.dexdrip.profileeditor.ProfileEditor"
-                    android:targetPackage="@string/local_target_package"/>
+                    android:targetPackage="@string/local_target_package" />
             </Preference>
             <EditTextPreference
                 android:defaultValue="35"
@@ -335,7 +430,7 @@
             android:dependency="I_understand"
             android:key="xdrip_plus_adv_predict"
             android:summary="@string/deel_settings_for_algs"
-            android:title="Low level prediction values">
+            android:title="@string/low_prediction_values">
 
 
             <PreferenceCategory
@@ -346,23 +441,27 @@
                     android:defaultValue="100"
                     android:key="plus_target_range"
                     android:summary=""
-                    android:title="Target Glucose Default" />
+                    android:inputType="numberDecimal"
+                    android:title="@string/target_glucose_default" />
                 <EditTextPreference
                     android:defaultValue="3.0"
                     android:key="xplus_insulin_dia"
                     android:summary=""
+                    android:inputType="numberDecimal"
                     android:title="@string/insulin_duration_hours" />
 
                 <EditTextPreference
                     android:defaultValue="2"
                     android:key="xplus_liver_sensitivity"
                     android:summary=""
+                    android:inputType="numberDecimal"
                     android:title="@string/default_liver_sensitivity_ratio" />
                 <EditTextPreference
                     android:defaultValue="0.8"
                     android:key="xplus_liver_maximpact"
                     android:summary=""
-                    android:title="Default Liver Maximum Impact (0-1)" />
+                    android:inputType="numberDecimal"
+                    android:title="@string/default_liver_maximum_impact" />
             </PreferenceCategory>
         </PreferenceScreen>
 
@@ -384,6 +483,7 @@
             <CheckBoxPreference
                 android:defaultValue="true"
                 android:key="use_custom_sync_key"
+                android:enabled="false"
                 android:summary="@string/key_is_used_instead_of_google_account"
                 android:title="@string/sync_using_custom_security_key" />
             <EditTextPreference
@@ -402,6 +502,33 @@
                 android:key="plus_follow_geolocation"
                 android:summary="@string/send_parakeet_map_location_to_followers"
                 android:title="@string/sync_parakeet_geolocation" />
+            <PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+                android:key="xdrip_plus_remote_snooze_settings"
+                android:summary="@string/remote_snoozes"
+                android:title="@string/remote_snoozing">
+                <CheckBoxPreference
+                    android:defaultValue="false"
+                    android:key="send_snooze_to_remote"
+                    android:summary="@string/snoozes_will_silence_all"
+                    android:title="@string/send_snooze_to_all" />
+                <CheckBoxPreference
+                    android:defaultValue="false"
+                    android:dependency="send_snooze_to_remote"
+                    android:key="confirm_snooze_to_remote"
+                    android:summary="@string/confirm_remote_snoozes"
+                    android:title="@string/confirm_sensing_snooze" />
+                <CheckBoxPreference
+                    android:defaultValue="false"
+                    android:key="accept_remote_snoozes"
+                    android:summary="@string/allow_remotes_silence"
+                    android:title="@string/acccept_remote_snoozes" />
+                <CheckBoxPreference
+                    android:defaultValue="true"
+                    android:dependency="accept_remote_snoozes"
+                    android:key="remote_snoozes_wifi_match"
+                    android:summary="@string/only_accept_same_network"
+                    android:title="@string/wifi_name_must_match" />
+            </PreferenceScreen>
             <CheckBoxPreference
                 android:defaultValue="false"
                 android:key="disable_all_sync"
@@ -411,6 +538,65 @@
     </PreferenceScreen>
 
     <PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+        android:icon="@drawable/ic_car_connected_grey600_48dp"
+        android:key="xdrip_plus_motion_settings"
+        android:summary="@string/movement_detection_and_vehicle_mode"
+        android:title="@string/xdrip_motion_tracking">
+        <SwitchPreference
+            android:defaultValue="false"
+            android:key="motion_tracking_enabled"
+            android:summary="@string/detect_motion_types"
+            android:switchTextOff="@string/short_off_text_for_switches"
+            android:switchTextOn="@string/short_on_text_for_switches"
+            android:title="@string/enable_motion_tracking" />
+        <CheckBoxPreference
+            android:defaultValue="true"
+            android:dependency="motion_tracking_enabled"
+            android:key="plot_motion"
+            android:summary="@string/display_motion_types"
+            android:title="@string/log_and_plot_motion" />
+        <CheckBoxPreference
+            android:defaultValue="false"
+            android:dependency="motion_tracking_enabled"
+            android:key="use_remote_motion"
+            android:summary="@string/use_remote_motion_data"
+            android:title="@string/use_remote_motion" />
+        <CheckBoxPreference
+            android:defaultValue="false"
+            android:dependency="motion_tracking_enabled"
+            android:key="act_as_motion_master"
+            android:summary="@string/be_motion_master"
+            android:title="@string/act_as_motion_master" />
+        <SwitchPreference
+            android:defaultValue="false"
+            android:dependency="motion_tracking_enabled"
+            android:key="vehicle_mode_enabled"
+            android:summary="@string/vehicle_motion_extras"
+            android:switchTextOff="@string/short_off_text_for_switches"
+            android:switchTextOn="@string/short_on_text_for_switches"
+            android:title="@string/enable_vehicle_mode" />
+        <CheckBoxPreference
+            android:defaultValue="false"
+            android:dependency="vehicle_mode_enabled"
+            android:key="raise_low_limit_in_vehicle_mode"
+            android:summary="@string/increase_low_alarms_vehicle_mode"
+            android:title="@string/raise_low_threshold" />
+        <CheckBoxPreference
+            android:defaultValue="true"
+            android:dependency="vehicle_mode_enabled"
+            android:key="play_sound_in_vehicle_mode"
+            android:summary="@string/notification_sound_vehicle_mode"
+            android:title="@string/play_sound" />
+        <CheckBoxPreference
+            android:defaultValue="true"
+            android:dependency="vehicle_mode_enabled"
+            android:key="repeat_sound_in_vehicle_mode"
+            android:summary="@string/repeat_notification_every_90_minutes"
+            android:title="@string/repeat_sound" />
+    </PreferenceScreen>
+
+
+    <PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
         android:icon="@drawable/ic_briefcase_download_grey600_48dp"
         android:key="xdrip_plus_update_settings"
         android:summary="@string/automatic_updates_crash_reports_and_feedback"
@@ -418,7 +604,10 @@
         <SwitchPreference
             android:defaultValue="true"
             android:key="auto_update_download"
-            android:summary="@string/get_notified_of_new_apk_releases"
+            android:summaryOff="New releases often have bugs fixed. It is recommended to switch on update notifications!"
+            android:summaryOn="@string/get_notified_of_new_apk_releases"
+            android:switchTextOff="@string/short_off_text_for_switches"
+            android:switchTextOn="@string/short_on_text_for_switches"
             android:title="@string/automatic_update_check" />
         <ListPreference
             android:defaultValue="beta"
@@ -434,6 +623,12 @@
             android:key="enable_crashlytics"
             android:summary="@string/send_crash_errors_to_developer"
             android:title="@string/automatic_crash_reporting" />
+        <CheckBoxPreference
+            android:defaultValue="true"
+            android:key="enable_telemetry"
+            android:dependency="enable_crashlytics"
+            android:summary="@string/send_data_to_developers"
+            android:title="@string/enable_telemetry" />
         <Preference
             android:key="send_feedback"
             android:summary="@string/web_feedback_form_for_sending_messages"

@@ -6,6 +6,7 @@ import android.os.AsyncTask;
 import android.preference.PreferenceManager;
 import android.util.Log;
 
+import com.eveningoutpost.dexdrip.Models.UserError;
 import com.eveningoutpost.dexdrip.ShareModels.Models.ExistingFollower;
 import com.eveningoutpost.dexdrip.ShareModels.Models.InvitationPayload;
 import com.eveningoutpost.dexdrip.ShareModels.Models.ShareAuthenticationBody;
@@ -38,7 +39,7 @@ import retrofit.GsonConverterFactory;
 import retrofit.Retrofit;
 
 /**
- * Created by stephenblack on 12/26/14.
+ * Created by Emma Black on 12/26/14.
  */
 public class ShareRest {
     public static String TAG = ShareRest.class.getSimpleName();
@@ -64,32 +65,45 @@ public class ShareRest {
         }
     };
 
-    private static final String SHARE_BASE_URL = "https://share2.dexcom.com/ShareWebServices/Services/";
+    private static final String US_SHARE_BASE_URL = "https://share2.dexcom.com/ShareWebServices/Services/";
+    private static final String NON_US_SHARE_BASE_URL = "https://shareous1.dexcom.com/ShareWebServices/Services/";
     private SharedPreferences sharedPreferences;
 
-    public ShareRest (Context context, OkHttpClient okHttpClient) {
-        OkHttpClient httpClient = okHttpClient != null ? okHttpClient : getOkHttpClient();
+    public ShareRest(Context context, OkHttpClient okHttpClient) {
 
-        Gson gson = new GsonBuilder()
-                .excludeFieldsWithoutExposeAnnotation()
-                .create();
-        Retrofit retrofit = new Retrofit.Builder()
-                .baseUrl(SHARE_BASE_URL)
-                .client(httpClient)
-                .addConverterFactory(GsonConverterFactory.create(gson))
-                .build();
-        dexcomShareApi = retrofit.create(DexcomShare.class);
-        sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context);
-        sessionId = sharedPreferences.getString("dexcom_share_session_id", null);
-        username = sharedPreferences.getString("dexcom_account_name", null);
-        password = sharedPreferences.getString("dexcom_account_password", null);
-        serialNumber = sharedPreferences.getString("share_key", null);
-        sharedPreferences.registerOnSharedPreferenceChangeListener(preferenceChangeListener);
-        if ("".equals(sessionId)) // migrate previous empty sessionIds to null;
-            sessionId = null;
+        try {
+            OkHttpClient httpClient = okHttpClient != null ? okHttpClient : getOkHttpClient();
+
+            if (httpClient == null) httpClient = getOkHttpClient(); // try again on failure
+            // if fails second time we've got big problems
+
+            sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context);
+            Gson gson = new GsonBuilder()
+                    .excludeFieldsWithoutExposeAnnotation()
+                    .create();
+            Retrofit retrofit = new Retrofit.Builder()
+                    .baseUrl(sharedPreferences.getBoolean("dex_share_us_acct", true) ? US_SHARE_BASE_URL : NON_US_SHARE_BASE_URL)
+                    .client(httpClient)
+                    .addConverterFactory(GsonConverterFactory.create(gson))
+                    .build();
+            dexcomShareApi = retrofit.create(DexcomShare.class);
+            sessionId = sharedPreferences.getString("dexcom_share_session_id", null);
+            username = sharedPreferences.getString("dexcom_account_name", null);
+            password = sharedPreferences.getString("dexcom_account_password", null);
+            serialNumber = sharedPreferences.getString("share_key", null);
+            if (sharedPreferences.getBoolean("engineering_mode", false)) {
+                final String share_test_key = sharedPreferences.getString("share_test_key", "").trim();
+                if (share_test_key.length() > 4) serialNumber = share_test_key;
+            }
+            sharedPreferences.registerOnSharedPreferenceChangeListener(preferenceChangeListener);
+            if ("".equals(sessionId)) // migrate previous empty sessionIds to null;
+                sessionId = null;
+        } catch (IllegalStateException e) {
+            Log.wtf(TAG, "Illegal state exception: " + e);
+        }
     }
 
-    public OkHttpClient getOkHttpClient() {
+    private synchronized OkHttpClient getOkHttpClient() {
         try {
             final TrustManager[] trustAllCerts = new TrustManager[] { new X509TrustManager() {
                 @Override
@@ -114,7 +128,7 @@ public class ShareRest {
             sslContext.init(null, trustAllCerts, new java.security.SecureRandom());
             final SSLSocketFactory sslSocketFactory = sslContext.getSocketFactory();
 
-            OkHttpClient okHttpClient = new OkHttpClient();
+            final OkHttpClient okHttpClient = new OkHttpClient();
             okHttpClient.networkInterceptors().add(new Interceptor() {
                 @Override
                 public Response intercept(Chain chain) throws IOException {
@@ -132,7 +146,7 @@ public class ShareRest {
                         copy.body().writeTo(buffer);
                         Log.d(TAG, "Request body: " + buffer.readUtf8());
 
-                        Response response = chain.proceed(modifiedRequest);
+                        final Response response = chain.proceed(modifiedRequest);
                         Log.d(TAG, "Received response: " + response.toString());
                         if (response.body() != null) {
                             MediaType contentType = response.body().contentType();
@@ -144,6 +158,9 @@ public class ShareRest {
 
                     } catch (NullPointerException e) {
                         Log.e(TAG, "Got null pointer exception: " + e);
+                        return null;
+                    } catch (IllegalStateException e) {
+                        UserError.Log.wtf(TAG,"Got illegal state exception: " + e);
                         return null;
                     }
                 }
@@ -164,7 +181,7 @@ public class ShareRest {
         }
     }
 
-    public String getSessionId() {
+    private String getSessionId() {
         AsyncTask<String, Void, String> task = new AsyncTask<String, Void, String>() {
 
             @Override
@@ -178,6 +195,9 @@ public class ShareRest {
                     } else
                         return params[0];
                 } catch (IOException e) {
+                    return null;
+                } catch (RuntimeException e) {
+                    UserError.Log.wtf(TAG, "Painful exception processing response in updateAuthenticationParams " + e);
                     return null;
                 }
             }

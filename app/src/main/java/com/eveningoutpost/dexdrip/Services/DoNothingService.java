@@ -1,31 +1,31 @@
 package com.eveningoutpost.dexdrip.Services;
 
-import android.annotation.TargetApi;
-import android.app.AlarmManager;
 import android.app.PendingIntent;
 import android.app.Service;
-import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
 import android.preference.PreferenceManager;
-import android.util.Log;
 
 import com.eveningoutpost.dexdrip.GcmActivity;
 import com.eveningoutpost.dexdrip.GcmListenerSvc;
 import com.eveningoutpost.dexdrip.Home;
+import com.eveningoutpost.dexdrip.Models.BgReading;
 import com.eveningoutpost.dexdrip.Models.JoH;
 import com.eveningoutpost.dexdrip.Models.UserError;
 import com.eveningoutpost.dexdrip.UtilityModels.CollectionServiceStarter;
 import com.eveningoutpost.dexdrip.UtilityModels.ForegroundServiceStarter;
+import com.eveningoutpost.dexdrip.UtilityModels.StatusItem;
 
+import java.util.ArrayList;
 import java.util.Calendar;
+import java.util.List;
 
 public class DoNothingService extends Service {
     private final static String TAG = DoNothingService.class.getSimpleName();
-    public DoNothingService dexCollectionService;
+    private DoNothingService dexCollectionService;
     private SharedPreferences prefs;
     private ForegroundServiceStarter foregroundServiceStarter;
     public SharedPreferences.OnSharedPreferenceChangeListener prefListener = new SharedPreferences.OnSharedPreferenceChangeListener() {
@@ -43,10 +43,11 @@ public class DoNothingService extends Service {
             }
         }
     };
-    private Context mContext;
+
     private static long nextWakeUpTime = -1;
+    private static long wake_time_difference = 0;
     private static int wakeUpErrors = 0;
-    private static boolean wakeUpFailsafe = false;
+    private static String lastState = "Not running";
 
 
     public DoNothingService() {
@@ -61,7 +62,6 @@ public class DoNothingService extends Service {
     public void onCreate() {
         foregroundServiceStarter = new ForegroundServiceStarter(getApplicationContext(), this);
         foregroundServiceStarter.start();
-        mContext = getApplicationContext();
         dexCollectionService = this;
         prefs = PreferenceManager.getDefaultSharedPreferences(getApplicationContext());
         listenForChangeInSettings();
@@ -71,6 +71,7 @@ public class DoNothingService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         final PowerManager.WakeLock wl = JoH.getWakeLock("donothing-follower", 60000);
+        lastState="Trying to start "+JoH.hourMinuteString();
         if (android.os.Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN_MR1) {
             stopSelf();
             JoH.releaseWakeLock(wl);
@@ -78,15 +79,10 @@ public class DoNothingService extends Service {
         }
 
         if (nextWakeUpTime > 0) {
-            final long wake_time_difference = Calendar.getInstance().getTimeInMillis() - nextWakeUpTime;
+            wake_time_difference = Calendar.getInstance().getTimeInMillis() - nextWakeUpTime;
             if (wake_time_difference > 10000) {
                 UserError.Log.e(TAG, "Slow Wake up! time difference in ms: " + wake_time_difference);
                 wakeUpErrors = wakeUpErrors + 3;
-                if (wakeUpErrors > 7) {
-                    wakeUpFailsafe = true;
-                    UserError.Log.e(TAG, "Wake up FailSafe engaged!!!");
-                }
-
             } else {
                 if (wakeUpErrors > 0) wakeUpErrors--;
             }
@@ -95,7 +91,7 @@ public class DoNothingService extends Service {
         if (CollectionServiceStarter.isFollower(getApplicationContext())) {
             new Thread(new Runnable() {
                 public void run() {
-                    int minsago = GcmListenerSvc.lastMessageMinutesAgo();
+                    final int minsago = GcmListenerSvc.lastMessageMinutesAgo();
                     //Log.d(TAG, "Tick: minutes ago: " + minsago);
                     int sleep_time = 1000;
 
@@ -108,14 +104,14 @@ public class DoNothingService extends Service {
                     }
 
                     if (minsago > 6) {
-                        GcmActivity.requestPing();
+                        if (Home.get_follower()) GcmActivity.requestPing();
                         sleep_time = (minsago < 60) ? ((minsago / 6) * 1000) : 1000; // increase sleep time up to 10s for first hour or revert
                     }
 
                     try {
                         Thread.sleep(sleep_time);
-                    } catch (
-                            InterruptedException e) {
+                    } catch (InterruptedException e) {
+                        //
                     }
 
                     setFailOverTimer();
@@ -127,6 +123,7 @@ public class DoNothingService extends Service {
             JoH.releaseWakeLock(wl);
             return START_NOT_STICKY;
         }
+        lastState="Started "+JoH.hourMinuteString();
         return START_STICKY;
 
     }
@@ -137,31 +134,18 @@ public class DoNothingService extends Service {
         UserError.Log.d(TAG, "onDestroy entered");
         foregroundServiceStarter.stop();
         UserError.Log.i(TAG, "SERVICE STOPPED");
+        lastState="Stopped "+JoH.hourMinuteString();
     }
 
     private void setFailOverTimer() {
         if (Home.get_follower()) {
             final long retry_in = (5 * 60 * 1000);
             UserError.Log.d(TAG, "setFailoverTimer: Restarting in: " + (retry_in / (60 * 1000)) + " minutes");
-            final Calendar calendar = Calendar.getInstance();
-            final AlarmManager alarm = (AlarmManager) getSystemService(ALARM_SERVICE);
-            final long wakeUpTime = calendar.getTimeInMillis() + retry_in;
-            nextWakeUpTime = wakeUpTime;
+            nextWakeUpTime = JoH.tsl() + retry_in;
 
             final PendingIntent wakeIntent = PendingIntent.getService(this, 0, new Intent(this, this.getClass()), 0);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                alarm.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, wakeUpTime, wakeIntent);
-            } else {
-                if ((wakeUpFailsafe) && (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)) {
-                    alarm.setAlarmClock(new AlarmManager.AlarmClockInfo(wakeUpTime, wakeIntent), wakeIntent);
-                } else {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-                        alarm.setExact(AlarmManager.RTC_WAKEUP, wakeUpTime, wakeIntent);
-                    } else {
-                        alarm.set(AlarmManager.RTC_WAKEUP, wakeUpTime, wakeIntent);
-                    }
-                }
-            }
+            JoH.wakeUpIntent(this, retry_in, wakeIntent);
+
         } else {
             stopSelf();
         }
@@ -169,6 +153,41 @@ public class DoNothingService extends Service {
 
     public void listenForChangeInSettings() {
         prefs.registerOnSharedPreferenceChangeListener(prefListener);
+    }
+
+
+    // data for MegaStatus
+    private static BgReading last_bg;
+
+    public static List<StatusItem> megaStatus() {
+        final List<StatusItem> l = new ArrayList<>();
+        if (Home.get_master()) {
+            l.add(new StatusItem("Service State", "We are the Master"));
+
+        } else {
+            l.add(new StatusItem("Service State", lastState));
+
+
+            if (last_bg != null) {
+                if (JoH.ratelimit("follower-bg-status", 5)) {
+                    last_bg = BgReading.last();
+                }
+                l.add(new StatusItem("Glucose Data", JoH.niceTimeSince(last_bg.timestamp)+" ago"));
+            } else {
+                last_bg = BgReading.last();
+            }
+
+            if (wakeUpErrors > 0) {
+                l.add(new StatusItem("Slow Wake up", JoH.niceTimeScalar(wake_time_difference)));
+                l.add(new StatusItem("Wake Up Errors", wakeUpErrors));
+            }
+
+            if (nextWakeUpTime != -1) {
+                l.add(new StatusItem("Next Wake up: ", JoH.niceTimeTill(nextWakeUpTime)));
+
+            }
+        }
+        return l;
     }
 
 }

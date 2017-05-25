@@ -23,40 +23,52 @@ import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanFilter;
 import android.bluetooth.le.ScanResult;
 import android.bluetooth.le.ScanSettings;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
-import android.os.ParcelUuid;
 import android.os.PowerManager;
 import android.preference.PreferenceManager;
 
 import com.eveningoutpost.dexdrip.G5Model.AuthChallengeRxMessage;
 import com.eveningoutpost.dexdrip.G5Model.AuthChallengeTxMessage;
-
 import com.eveningoutpost.dexdrip.G5Model.AuthRequestTxMessage;
 import com.eveningoutpost.dexdrip.G5Model.AuthStatusRxMessage;
+import com.eveningoutpost.dexdrip.G5Model.BatteryInfoRxMessage;
+import com.eveningoutpost.dexdrip.G5Model.BatteryInfoTxMessage;
 import com.eveningoutpost.dexdrip.G5Model.BluetoothServices;
 import com.eveningoutpost.dexdrip.G5Model.BondRequestTxMessage;
 import com.eveningoutpost.dexdrip.G5Model.DisconnectTxMessage;
 import com.eveningoutpost.dexdrip.G5Model.Extensions;
+import com.eveningoutpost.dexdrip.G5Model.GlucoseRxMessage;
+import com.eveningoutpost.dexdrip.G5Model.GlucoseTxMessage;
+import com.eveningoutpost.dexdrip.G5Model.KeepAliveTxMessage;
 import com.eveningoutpost.dexdrip.G5Model.SensorRxMessage;
 import com.eveningoutpost.dexdrip.G5Model.SensorTxMessage;
+import com.eveningoutpost.dexdrip.G5Model.Transmitter;
 import com.eveningoutpost.dexdrip.G5Model.TransmitterStatus;
+import com.eveningoutpost.dexdrip.G5Model.VersionRequestRxMessage;
+import com.eveningoutpost.dexdrip.G5Model.VersionRequestTxMessage;
+import com.eveningoutpost.dexdrip.Home;
 import com.eveningoutpost.dexdrip.Models.BgReading;
 import com.eveningoutpost.dexdrip.Models.JoH;
 import com.eveningoutpost.dexdrip.Models.Sensor;
 import com.eveningoutpost.dexdrip.Models.TransmitterData;
+import com.eveningoutpost.dexdrip.Models.UserError;
 import com.eveningoutpost.dexdrip.Models.UserError.Log;
-import com.eveningoutpost.dexdrip.G5Model.Transmitter;
-
 import com.eveningoutpost.dexdrip.UtilityModels.CollectionServiceStarter;
 import com.eveningoutpost.dexdrip.UtilityModels.ForegroundServiceStarter;
+import com.eveningoutpost.dexdrip.UtilityModels.PersistentStore;
+import com.eveningoutpost.dexdrip.UtilityModels.StatusItem;
 import com.eveningoutpost.dexdrip.utils.BgToSpeech;
+import com.eveningoutpost.dexdrip.utils.PowerStateReceiver;
 import com.eveningoutpost.dexdrip.xdrip;
+import com.google.android.gms.wearable.DataMap;
 
 import java.io.UnsupportedEncodingException;
 import java.lang.reflect.Method;
@@ -80,15 +92,24 @@ import javax.crypto.IllegalBlockSizeException;
 import javax.crypto.NoSuchPaddingException;
 import javax.crypto.spec.SecretKeySpec;
 
+import static com.eveningoutpost.dexdrip.G5Model.BluetoothServices.getStatusName;
+import static com.eveningoutpost.dexdrip.G5Model.BluetoothServices.getUUIDName;
+
 @TargetApi(Build.VERSION_CODES.LOLLIPOP)
 public class G5CollectionService extends Service {
 
-    private final static String TAG = G5CollectionService.class.getSimpleName();
+    public final static String TAG = G5CollectionService.class.getSimpleName();
 
     private static final Object short_lock = new Object();
+    private final Object mLock = new Object();
     private static boolean cycling_bt = false;
     private static boolean service_running = false;
     private static boolean scan_scheduled = false;
+
+    private static byte lastOnReadCode = (byte)0xff;
+    private static int successes = 0;
+    private static int failures = 0;
+    private boolean force_always_authenticate = false;
 
     private ForegroundServiceStarter foregroundServiceStarter;
 
@@ -107,10 +128,13 @@ public class G5CollectionService extends Service {
     private BluetoothGattService cgmService;// = gatt.getService(UUID.fromString(BluetoothServices.CGMService));
     private BluetoothGattCharacteristic authCharacteristic;// = cgmService.getCharacteristic(UUID.fromString(BluetoothServices.Authentication));
     private BluetoothGattCharacteristic controlCharacteristic;//
-    private BluetoothGattCharacteristic commCharacteristic;//
+    //private BluetoothGattCharacteristic commCharacteristic;//
 
     private BluetoothDevice device;
     private Boolean isBondedOrBonding = false;
+    private Boolean isBonded = false;
+    private int currentBondState = 0;
+    private int waitingBondConfirmation = 0; // 0 = not waiting, 1 = waiting, 2 = received
     public static boolean keep_running = true;
 
     private ScanSettings settings;
@@ -120,8 +144,8 @@ public class G5CollectionService extends Service {
     private static boolean isScanning = false;
     private boolean isConnected = false;
     private boolean encountered133 = false;
-    private Handler handler;
-    public int max133Retries = 5;
+    //private Handler handler;
+    private final int max133Retries = 5;
     public int max133RetryCounter = 0;
     private static int disconnected133 = 0;
     private static int disconnected59 = 0;
@@ -132,9 +156,33 @@ public class G5CollectionService extends Service {
     private int maxScanIntervalInMilliseconds = 5 * 1000; //seconds *1k
     private int maxScanCycles = 24;
     private int scanCycleCount = 0;
+    //private boolean delays = false;
+
+    private static final int LOW_BATTERY_WARNING_LEVEL = 300; // voltage a < this value raises warnings
+
+    private static String lastState = "Not running";
+    private static String lastStateWatch = "Not running";
+    private static long static_last_timestamp = 0;
+    private static long static_last_timestamp_watch = 0;
+    private static long last_transmitter_timestamp = 0;
+
+    public static boolean getBatteryStatusNow = false;
+
+    // test params
+    private static final boolean ignoreLocalBondingState = false; // don't try to bond gives: GATT_ERR_UNLIKELY but no more 133s
+    private static final boolean delayOnBond = false; // delay while bonding also gives ERR_UNLIKELY but no more 133s
+    private static final boolean tryPreBondWithDelay = false; // prebond with delay seems to help
+    private static final boolean tryOnDemandBondWithDelay = true; // bond when requested
+    private static final boolean delayOn133Errors = true; // add some delays with 133 errors
+    private static final boolean useKeepAlive = true; // add some delays with 133 errors
+    private static final boolean simpleBondWait = true; // possible UI thread issue but apparently more reliable
+    private static final boolean getVersionDetails = true; // try to load firmware version details
+    private static final boolean getBatteryDetails = true; // try to load battery info details
+
+    private static final long BATTERY_READ_PERIOD_MS = 1000 * 60 * 60 * 12; // how often to poll battery data (12 hours)
+
 
     StringBuilder log = new StringBuilder();
-
 
     @Override
     public void onCreate() {
@@ -146,12 +194,77 @@ public class G5CollectionService extends Service {
         service = this;
         foregroundServiceStarter = new ForegroundServiceStarter(getApplicationContext(), service);
         foregroundServiceStarter.start();
-//        final IntentFilter bondintent = new IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED);
-//        registerReceiver(mPairReceiver, bondintent);
+
         prefs = PreferenceManager.getDefaultSharedPreferences(getApplicationContext());
         listenForChangeInSettings();
+
+        // TODO check this
         bgToSpeech = BgToSpeech.setupTTS(getApplicationContext()); //keep reference to not being garbage collected
-        handler = new Handler(getApplicationContext().getMainLooper());
+        // handler = new Handler(getApplicationContext().getMainLooper());
+
+        final IntentFilter bondintent = new IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED);//KS turn on
+        bondintent.addAction(BluetoothDevice.ACTION_FOUND);//KS add
+        registerReceiver(mPairReceiver, bondintent);//KS turn on
+
+        final IntentFilter pairingRequestFilter = new IntentFilter(BluetoothDevice.ACTION_PAIRING_REQUEST);
+        pairingRequestFilter.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY - 1);
+        registerReceiver(mPairingRequestRecevier, pairingRequestFilter);
+    }
+
+    final BroadcastReceiver mPairReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            final String action = intent.getAction();
+            Log.d(TAG, "onReceive ACTION: " + action);
+            // When discovery finds a device
+            if (BluetoothDevice.ACTION_FOUND.equals(action)) {
+                final BluetoothDevice parcel_device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                // TODO do we need to filter on the last 2 characters of the device name here?
+                currentBondState = parcel_device.getBondState();
+                Log.d(TAG, "onReceive FOUND: " + parcel_device.getName() + " STATE: " + parcel_device.getBondState());
+            } else if (BluetoothDevice.ACTION_BOND_STATE_CHANGED.equals(action)) {
+                final BluetoothDevice parcel_device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                // TODO do we need to filter on the last 2 characters of the device name here?
+                currentBondState = parcel_device.getBondState();
+                final int bond_state_extra = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1);
+                final int previous_bond_state_extra = intent.getIntExtra(BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, -1);
+
+                Log.e(TAG, "onReceive UPDATE Name " + parcel_device.getName() + " Value " + parcel_device.getAddress()
+                        + " Bond state " + parcel_device.getBondState() + bondState(parcel_device.getBondState()) + " "
+                        + "bs: " + bondState(bond_state_extra) + " was " + bondState(previous_bond_state_extra));
+
+                try {
+                    // TODO check getBondState() or bond_state_extra ?
+                    if (parcel_device.getBondState() == BluetoothDevice.BOND_BONDED) {
+                        if (parcel_device.getAddress().equals(device.getAddress())) {
+                            if (waitingBondConfirmation == 1) {
+                                waitingBondConfirmation = 2; // received
+                                Log.e(TAG, "Bond confirmation received!");
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    Log.wtf(TAG, "Got exception trying to process bonded confirmation: ", e);
+                }
+
+            }
+        }
+    };
+
+    private String bondState(int bs) {
+        String bondState;
+        if (bs == BluetoothDevice.BOND_NONE) {
+            bondState = " Unpaired";
+        } else if (bs == BluetoothDevice.BOND_BONDING) {
+            bondState = " Pairing";
+        } else if (bs == BluetoothDevice.BOND_BONDED) {
+            bondState = " Paired";
+        } else if (bs == 0) {
+            bondState = " Startup";
+        } else {
+            bondState = " Unknown bond state: " + bs;
+        }
+        return bondState;
     }
 
     public SharedPreferences.OnSharedPreferenceChangeListener prefListener = new SharedPreferences.OnSharedPreferenceChangeListener() {
@@ -183,18 +296,24 @@ public class G5CollectionService extends Service {
         // TODO do we need an unregister!?
     }
 
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-
+        xdrip.checkAppContext(getApplicationContext());
         final PowerManager.WakeLock wl = JoH.getWakeLock("g5-start-service", 120000);
         try {
             if ((!service_running) && (keep_running)) {
                 service_running = true;
 
                 Log.d(TAG, "onG5StartCommand wakeup: "+JoH.dateTimeText(JoH.tsl()));
+                Log.e(TAG, "settingsToString: " + settingsToString());
+
+                lastState = "Started: "+JoH.hourMinuteString();
+
                 //Log.d(TAG, "SDK: " + Build.VERSION.SDK_INT);
                 //stopScan();
-                if (!CollectionServiceStarter.isBTG5(xdrip.getAppContext())) {
+                if (!shouldServiceRun()) {
+                    Log.e(TAG,"Shutting down as no longer using G5 data source");
                     service_running = false;
                     keep_running = false;
                     stopSelf();
@@ -206,8 +325,12 @@ public class G5CollectionService extends Service {
                     mBluetoothAdapter = mBluetoothManager.getAdapter();
 
                     if (mGatt != null) {
-                        mGatt.close();
-                        mGatt = null;
+                        try {
+                            Log.d(TAG, "onStartCommand mGatt != null; mGatt.close() and set to null.");
+                            mGatt.close();
+                            mGatt = null;
+                        } catch (NullPointerException e) { //
+                        }
                     }
 
                     if (Sensor.isActive()) {
@@ -224,7 +347,7 @@ public class G5CollectionService extends Service {
                     return START_STICKY;
                 }
             } else {
-                Log.e(TAG,"jamorham service already active!");
+                Log.e(TAG,"G5 service already active!");
                 keepAlive();
                 return START_NOT_STICKY;
             }
@@ -234,41 +357,80 @@ public class G5CollectionService extends Service {
         }
     }
 
-    private void getTransmitterDetails() {
+    private synchronized void getTransmitterDetails() {
         prefs = PreferenceManager.getDefaultSharedPreferences(getApplicationContext());
         Log.d(TAG, "Transmitter: " + prefs.getString("dex_txid", "ABCDEF"));
         defaultTransmitter = new Transmitter(prefs.getString("dex_txid", "ABCDEF"));
+        final boolean previousBondedState = isBonded;
         isBondedOrBonding = false;
-        Set<BluetoothDevice> pairedDevices = mBluetoothAdapter.getBondedDevices();
-        if (pairedDevices.size() > 0) {
+        isBonded = false;
+        if (mBluetoothAdapter == null) {
+            Log.wtf(TAG, "No bluetooth adapter");
+            return;
+        }
+        final Set<BluetoothDevice> pairedDevices = mBluetoothAdapter.getBondedDevices();
+        if ((pairedDevices != null) && (pairedDevices.size() > 0)) {
             for (BluetoothDevice device : pairedDevices) {
                 if (device.getName() != null) {
 
-                    String transmitterIdLastTwo = Extensions.lastTwoCharactersOfString(defaultTransmitter.transmitterId);
-                    String deviceNameLastTwo = Extensions.lastTwoCharactersOfString(device.getName());
+                    final String transmitterIdLastTwo = Extensions.lastTwoCharactersOfString(defaultTransmitter.transmitterId);
+                    final String deviceNameLastTwo = Extensions.lastTwoCharactersOfString(device.getName());
 
                     if (transmitterIdLastTwo.equals(deviceNameLastTwo)) {
                         isBondedOrBonding = true;
+                        isBonded=true;
+                        if (!previousBondedState) Log.e(TAG,"Device is now detected as bonded!");
+                    // TODO should we break here for performance?
                     } else {
                         isIntialScan = true;
                     }
-
                 }
             }
         }
-        Log.d(TAG, "Bonded? " + isBondedOrBonding.toString());
+        if (previousBondedState && !isBonded) Log.e(TAG,"Device is no longer detected as bonded!");
+        Log.d(TAG, "getTransmitterDetails() result: Bonded? " + isBondedOrBonding.toString()+(isBonded ? " localed bonded" : " not locally bonded"));
+    }
+
+    private static boolean shouldServiceRun() {
+        final boolean result = CollectionServiceStarter.isBTG5(xdrip.getAppContext()) && !Home.get_forced_wear();
+        Log.d(TAG, "shouldServiceRun() returning: " + result);
+        return result;
     }
 
     @Override
     public void onDestroy() {
         super.onDestroy();
+        isScanning = true;//enable to ensure scanning is stopped to prevent service from starting back up onScanResult()
         stopScan();
+        isScanning = false;
+
+        Log.d(TAG, "onDestroy");
+        //SharedPreferences sharedPrefs = PreferenceManager.getDefaultSharedPreferences(getApplicationContext());
+        scan_interval_timer.cancel();
+        if (pendingIntent != null && !shouldServiceRun()) {
+            Log.d(TAG, "onDestroy stop Alarm pendingIntent");
+            AlarmManager alarm = (AlarmManager) getSystemService(ALARM_SERVICE);
+            alarm.cancel(pendingIntent);
+        }
+
+        // TODO do we need to gatt disconnect or close??
 //        close();
 //        setRetryTimer();
 //        foregroundServiceStarter.stop();
 //        unregisterReceiver(mPairReceiver);
+        try {
+            unregisterReceiver(mPairReceiver);
+        } catch (Exception e) {
+            Log.e(TAG, "Got exception unregistering bonding receiver: ", e);
+        }
+        try {
+            unregisterReceiver(mPairingRequestRecevier);
+        } catch (Exception e) {
+            Log.e(TAG, "Got exception unregistering pairing receiver: ", e);
+        }
 //        BgToSpeech.tearDownTTS();
         Log.i(TAG, "SERVICE STOPPED");
+        lastState="Stopped";
     }
 
     public synchronized void keepAlive() {
@@ -276,6 +438,7 @@ public class G5CollectionService extends Service {
     }
 
     public synchronized void keepAlive(int wake_in_ms) {
+        Log.d(TAG,"keepAlive keep_running=" + keep_running);
         if (!keep_running) return;
         if (JoH.ratelimit("G5-keepalive", 5)) {
             long wakeTime;
@@ -290,6 +453,7 @@ public class G5CollectionService extends Service {
             if (pendingIntent != null)
                 alarm.cancel(pendingIntent);
             pendingIntent = PendingIntent.getService(this, 0, new Intent(this, this.getClass()), 0);
+            // TODO use wakeIntent feature
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 alarm.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, wakeTime, pendingIntent);
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
@@ -308,6 +472,7 @@ public class G5CollectionService extends Service {
     }
 
     public void setupBluetooth() {
+
         getTransmitterDetails();
         if (mBluetoothAdapter == null || !mBluetoothAdapter.isEnabled()) {
             //First time using the app or bluetooth was turned off?
@@ -316,7 +481,7 @@ public class G5CollectionService extends Service {
             single_timer.schedule(new TimerTask() {
                 @Override
                 public void run() {
-                    mBluetoothAdapter.enable();
+                    if (mBluetoothAdapter != null) mBluetoothAdapter.enable();
                 }
             }, 1000);
             single_timer.schedule(new TimerTask() {
@@ -338,11 +503,16 @@ public class G5CollectionService extends Service {
                 filters.add(new ScanFilter.Builder().setDeviceName("Dexcom" + transmitterIdLastTwo).build());
             }
 
+            // unbond here to avoid clashes when we are mid-connection
+            if (alwaysUnbond()) {
+                forgetDevice();
+            }
+            JoH.ratelimit("G5-timeout",0);//re-init to ensure onStartCommand always executes cycleScan
             cycleScan(0);
         }
     }
 
-    public void stopScan(){
+    public synchronized void stopScan(){
         if (!isScanning) {
             Log.d(TAG, "alreadyStoppedScanning");
             return;
@@ -369,7 +539,7 @@ public class G5CollectionService extends Service {
 
                 } catch (NullPointerException e) {
                     //Known bug in Samsung API 21 stack
-                    System.out.print("Caught the NullPointerException");
+                    Log.e(TAG,"stopscan() Caught the NullPointerException");
                 }
             }
         }
@@ -378,7 +548,11 @@ public class G5CollectionService extends Service {
     private synchronized void stopLogic() {
         try {
             Log.e(TAG, "stopScan");
-            mLEScanner.stopScan(mScanCallback);
+            try {
+                mLEScanner.stopScan(mScanCallback);
+            } catch (NullPointerException | IllegalStateException e) {
+                Log.e(TAG, "Exception in stopLogic: " + e);
+            }
             isScanning = false;
         } catch (IllegalStateException is) {
 
@@ -387,8 +561,16 @@ public class G5CollectionService extends Service {
 
     public synchronized void cycleScan(int delay) {
 
-        if (!keep_running) return;
+        Log.d(TAG,"cycleScan keep_running=" + keep_running);
+        if (!keep_running) {
+            Log.e(TAG," OnDestroy failed to stop service. Shutting down now to prevent service from being initiated onScanResult().");
+            stopSelf();
+            return;
+        }
         if (JoH.ratelimit("G5-timeout",60) || !scan_scheduled) {
+            if (JoH.ratelimit("g5-scan-log",60)) {
+                Log.d(TAG, "cycleScan running");
+            }
             scan_scheduled=true;
             //Log.e(TAG, "Scheduling cycle scan, delay: " + delay);
             final Timer single_timer = new Timer();
@@ -419,7 +601,7 @@ public class G5CollectionService extends Service {
                                 } catch
                                         (NullPointerException e) {
                                     //Known bug in Samsung API 21 stack
-                                    System.out.print("Caught the NullPointerException");
+                                    Log.e(TAG,"Caught the NullPointerException in cyclescan");
                                 } finally {
                                     scan_scheduled=false;
                                 }
@@ -435,17 +617,21 @@ public class G5CollectionService extends Service {
     }
 
     private synchronized void scanLogic() {
+        Log.d(TAG,"scanLogic keep_running=" + keep_running);
         if (!keep_running) return;
-        if (JoH.ratelimit("G5-scanlogic",2)) {
+        if (JoH.ratelimit("G5-scanlogic", 1)) {//KS test change 2 -> 1 to support restart collector after n min missed readings
             try {
                 mLEScanner.stopScan(mScanCallback);
                 isScanning = false;
                 if (!isConnected) {
                     mLEScanner.startScan(filters, settings, mScanCallback);
-                    Log.w(TAG, "scan cycle start");
+                    lastState="Scanning";
+                    if (JoH.ratelimit("g5-scan-log",60)) {
+                        Log.w(TAG, "scan cycle start");
+                    }
                 }
                 isScanning = true;
-            } catch (IllegalStateException is) {
+            } catch (IllegalStateException | NullPointerException is) {
                 setupBluetooth();
             }
 
@@ -490,12 +676,17 @@ public class G5CollectionService extends Service {
     }
 
     public synchronized void startScan() {
-        android.util.Log.e(TAG, "Initial scan?" + isIntialScan);
+        UserError.Log.e(TAG, "Initial scan?" + isIntialScan);
         if (isScanning) {
             Log.d(TAG, "alreadyScanning");
             scan_interval_timer.cancel();
+            Log.d(TAG,"startScan keep_running=" + keep_running);
+            if (!keep_running) return;
             return;
         }
+
+        Log.d(TAG,"startScan keep_running=" + keep_running);
+        if (!keep_running) return;
 
         getTransmitterDetails();
         if (mBluetoothAdapter == null || !mBluetoothAdapter.isEnabled()) {
@@ -553,53 +744,63 @@ public class G5CollectionService extends Service {
         }
     }
 
-    private synchronized void cycleBT(){
+    private synchronized void cycleBT() {
         synchronized (short_lock) {
-            if (JoH.ratelimit("cyclebt",10)) {
+            if (JoH.ratelimit("cyclebt", 20)) {
+
+                // TODO cycling_bt not used as never set to true - rate limit any sync used instead
                 if (cycling_bt) {
                     Log.e(TAG, "jamorham Already concurrent BT cycle in progress!");
                     return;
                 }
                 encountered133 = false;
                 stopScan();
-                Log.e(TAG, "Cycling BT-gatt - disabling BT");
-                mBluetoothAdapter.disable();
-                Timer single_timer = new Timer();
-                single_timer.schedule(new TimerTask() {
-                    @Override
-                    public void run() {
-                        mBluetoothAdapter.enable();
-                        Log.e(TAG, "Cycling BT-gatt - enableing BT");
-                        cycling_bt = false;
-                    }
-                }, 3000);
+                if (g5BluetoothWatchdog()) {
+                    Log.e(TAG, "Cycling BT-gatt - disabling BT");
+                    mBluetoothAdapter.disable();
+                    Timer single_timer = new Timer();
+                    single_timer.schedule(new TimerTask() {
+                        @Override
+                        public void run() {
+                            mBluetoothAdapter.enable();
+                            Log.e(TAG, "Cycling BT-gatt - enableing BT");
+                            cycling_bt = false;
+                        }
+                    }, 3000);
+                } else {
+                    Log.e(TAG, "Wanted to cycle g5 bluetooth but is disabled in advanced bluetooth preferences!");
+                    waitFor(3000);
+                }
             }
             keepAlive();
         }
     }
 
-    void forgetDevice() {
-        Transmitter defaultTransmitter = new Transmitter(prefs.getString("dex_txid", "ABCDEF"));
+    private synchronized void forgetDevice() {
+        Log.d(TAG,"forgetDevice() start");
+        final Transmitter defaultTransmitter = new Transmitter(prefs.getString("dex_txid", "ABCDEF")); // should be cached?
         mBluetoothAdapter = mBluetoothManager.getAdapter();
-        Set<BluetoothDevice> pairedDevices = mBluetoothAdapter.getBondedDevices();
+        final Set<BluetoothDevice> pairedDevices = mBluetoothAdapter.getBondedDevices();
         if (pairedDevices.size() > 0) {
             for (BluetoothDevice device : pairedDevices) {
                 if (device.getName() != null) {
 
-                    String transmitterIdLastTwo = Extensions.lastTwoCharactersOfString(defaultTransmitter.transmitterId);
-                    String deviceNameLastTwo = Extensions.lastTwoCharactersOfString(device.getName());
-                    Log.e(TAG, "removeBond");
+                    final String transmitterIdLastTwo = Extensions.lastTwoCharactersOfString(defaultTransmitter.transmitterId);
+                    final String deviceNameLastTwo = Extensions.lastTwoCharactersOfString(device.getName());
+                    //Log.e(TAG, "removeBond: "+transmitterIdLastTwo+" vs "+deviceNameLastTwo);
                     if (transmitterIdLastTwo.equals(deviceNameLastTwo)) {
                         try {
+                            Log.e(TAG, "removingBond: "+transmitterIdLastTwo+" vs "+deviceNameLastTwo);
                             Method m = device.getClass().getMethod("removeBond", (Class[]) null);
                             m.invoke(device, (Object[]) null);
                             getTransmitterDetails();
-                        } catch (Exception e) { Log.e("SystemStatus", e.getMessage(), e); }
+                        } catch (Exception e) { Log.e(TAG, e.getMessage(), e); }
                     }
 
                 }
             }
         }
+        Log.d(TAG,"forgetDevice() finished");
     }
 
     // API 18 - 20
@@ -632,7 +833,7 @@ public class G5CollectionService extends Service {
         mScanCallback = new ScanCallback() {
             @Override
             public void onScanResult(int callbackType, ScanResult result) {
-                android.util.Log.i(TAG, "result: " + result.toString());
+                UserError.Log.i(TAG, "result: " + result.toString());
                 BluetoothDevice btDevice = result.getDevice();
 //                // Check if the device has a name, the Dexcom transmitter always should. Match it with the transmitter id that was entered.
 //                // We get the last 2 characters to connect to the correct transmitter if there is more than 1 active or in the room.
@@ -661,7 +862,7 @@ public class G5CollectionService extends Service {
             public void onScanFailed(int errorCode) {
                 Log.e(TAG, "Scan Failed Error Code: " + errorCode);
                 if (errorCode == 1) {
-                    android.util.Log.e(TAG, "Already Scanning: " + isScanning);
+                    UserError.Log.e(TAG, "Already Scanning: " + isScanning);
                     //isScanning = true;
                 } else if (errorCode == 2){
                     cycleBT();
@@ -671,635 +872,826 @@ public class G5CollectionService extends Service {
     }
 
     public synchronized void fullAuthenticate() {
-
+        Log.e(TAG, "fullAuthenticate() start");
         if (alwaysUnbond()) {
             forgetDevice();
         }
-
-        android.util.Log.i(TAG, "Start Auth Process(fullAuthenticate)");
-        authRequest = new AuthRequestTxMessage();
-        authCharacteristic.setValue(authRequest.byteSequence);
-        android.util.Log.i(TAG, authRequest.byteSequence.toString());
-        mGatt.writeCharacteristic(authCharacteristic);
+        try {
+            Log.i(TAG, "Start Auth Process(fullAuthenticate)");
+            if (authCharacteristic != null) {
+                sendAuthRequestTxMessage(mGatt, authCharacteristic);
+            } else {
+                Log.e(TAG, "fullAuthenticate: authCharacteristic is NULL!");
+            }
+        } catch (NullPointerException e) {
+            Log.e(TAG, "Got null pointer in fullAuthenticate: " + e);
+        }
     }
 
     public synchronized void authenticate() {
-        mGatt.setCharacteristicNotification(authCharacteristic, true);
-        if (!mGatt.readCharacteristic(authCharacteristic)) {
-            android.util.Log.e(TAG, "onCharacteristicRead : ReadCharacteristicError");
+        Log.e(TAG,"authenticate() start");
+        try {
+            mGatt.setCharacteristicNotification(authCharacteristic, true);
+            if (!mGatt.readCharacteristic(authCharacteristic)) {
+                Log.e(TAG, "onCharacteristicRead : ReadCharacteristicError");
+            }
+        } catch (NullPointerException e) {
+            Log.e(TAG, "Got Nullpointer exception in authenticate(): " + e);
         }
     }
 
     public synchronized void getSensorData() {
-        android.util.Log.i(TAG, "Request Sensor Data");
-        mGatt.setCharacteristicNotification(controlCharacteristic, true);
-        BluetoothGattDescriptor descriptor = controlCharacteristic.getDescriptor(BluetoothServices.CharacteristicUpdateNotification);
-        descriptor.setValue(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE);
-        SensorTxMessage sensorTx = new SensorTxMessage();
-        controlCharacteristic.setValue(sensorTx.byteSequence);
-        mGatt.writeDescriptor(descriptor);
+        Log.i(TAG, "Request Sensor Data");
+        try {
+            if (mGatt != null) {
+                mGatt.setCharacteristicNotification(controlCharacteristic, true);
+                final BluetoothGattDescriptor descriptor = controlCharacteristic.getDescriptor(BluetoothServices.CharacteristicUpdateNotification);
+                descriptor.setValue(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE);
+                if (useG5NewMethod()) {
+                    // new style
+                    GlucoseTxMessage glucoseTxMessage = new GlucoseTxMessage();
+                    controlCharacteristic.setValue(glucoseTxMessage.byteSequence);
+                } else {
+                    // old style
+                    SensorTxMessage sensorTx = new SensorTxMessage();
+                    controlCharacteristic.setValue(sensorTx.byteSequence);
+                }
+                Log.d(TAG,"getSensorData(): writing desccrptor");
+                mGatt.writeDescriptor(descriptor);
+            } else {
+                Log.e(TAG,"getSensorData() mGatt was null");
+            }
+        } catch (NullPointerException e) {
+            Log.e(TAG, "Got null pointer in getSensorData() " + e);
+        }
     }
 
     private BluetoothAdapter.LeScanCallback mLeScanCallback = null;
 
     private synchronized void connectToDevice(BluetoothDevice device) {
-        if (mGatt != null) {
-            Log.i(TAG, "BGatt isnt null, Closing.");
-            mGatt.close();
-            mGatt = null;
-        }
-        android.util.Log.i(TAG, "Request Connect");
-        if (enforceMainThread()){
-            Handler iHandler = new Handler(Looper.getMainLooper());
-            final BluetoothDevice mDevice = device;
-            iHandler.post(new Runnable() {
-                @Override
-                public void run() {
+        if (JoH.ratelimit("G5connect-rate", 2)) {
 
-                    android.util.Log.i(TAG, "mGatt Null, connecting...");
-                    android.util.Log.i(TAG, "connectToDevice On Main Thread? " + isOnMainThread());
-                    mGatt = mDevice.connectGatt(getApplicationContext(), false, gattCallback);
-
+            Log.d(TAG, "connectToDevice() start");
+            if (mGatt != null) {
+                Log.i(TAG, "BGatt isnt null, Closing.");
+                try {
+                    mGatt.close();
+                } catch (NullPointerException e) {
+                    // concurrency related null pointer
                 }
-            });
+                mGatt = null;
+            }
+            Log.i(TAG, "Request Connect");
+            final BluetoothDevice mDevice = device;
+            if (enforceMainThread()) {
+                Handler iHandler = new Handler(Looper.getMainLooper());
+                iHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        connectGatt(mDevice);
+                    }
+                });
+            } else {
+                connectGatt(mDevice);
+            }
+
         } else {
-            android.util.Log.i(TAG, "mGatt Null, connecting...");
-            android.util.Log.i(TAG, "connectToDevice On Main Thread? " + isOnMainThread());
-            mGatt = device.connectGatt(getApplicationContext(), false, gattCallback);
+            Log.e(TAG, "connectToDevice baulking due to rate-limit");
         }
-
-
     }
+
+    private synchronized void connectGatt(BluetoothDevice mDevice) {
+        Log.i(TAG, "mGatt Null, connecting...");
+        Log.i(TAG, "connectToDevice On Main Thread? " + isOnMainThread());
+        lastState="Found, Connecting";
+        if (delayOn133Errors && max133RetryCounter > 1) {
+            // should we only be looking at disconnected 133 here?
+            Log.e(TAG, "Adding a delay before connecting to 133 count of: " + max133RetryCounter);
+            waitFor(600);
+            Log.e(TAG, "connectGatt() delay completed");
+        }
+        mGatt = mDevice.connectGatt(getApplicationContext(), false, gattCallback);
+    }
+
 
     // Sends the disconnect tx message to our bt device.
     private synchronized void doDisconnectMessage(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
-        mGatt.setCharacteristicNotification(controlCharacteristic, false);
-        DisconnectTxMessage disconnectTx = new DisconnectTxMessage();
-        characteristic.setValue(disconnectTx.byteSequence);
-        mGatt.writeCharacteristic(characteristic);
-        mGatt.disconnect();
+           Log.d(TAG, "doDisconnectMessage() start");
+           gatt.setCharacteristicNotification(controlCharacteristic, false);
+           final DisconnectTxMessage disconnectTx = new DisconnectTxMessage();
+           characteristic.setValue(disconnectTx.byteSequence);
+           gatt.writeCharacteristic(characteristic);
+           gatt.disconnect();
+           Log.d(TAG, "doDisconnectMessage() finished");
     }
 
+
+    private synchronized void doVersionRequestMessage(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
+        Log.d(TAG, "doVersionRequestMessage() start");
+        final VersionRequestTxMessage versionTx = new VersionRequestTxMessage();
+        characteristic.setValue(versionTx.byteSequence);
+        gatt.writeCharacteristic(characteristic);
+        Log.d(TAG, "doVersionRequestMessage() finished");
+    }
+
+    private synchronized void doBatteryInfoRequestMessage(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
+        Log.d(TAG, "doBatteryInfoMessage() start");
+        characteristic.setValue(new BatteryInfoTxMessage().byteSequence);
+        gatt.writeCharacteristic(characteristic);
+        Log.d(TAG, "doBatteryInfoMessage() finished");
+    }
+
+    private synchronized void discoverServices() {
+        if (JoH.ratelimit("G5-discservices", 2)) {
+
+            Log.i(TAG, "discoverServices() started " + (isOnMainThread() ? "on main thread" : "not on main thread"));
+            if (mGatt != null) {
+                if (delayOn133Errors && max133RetryCounter > 1) {
+                    // should we only be looking at disconnected 133 here?
+                    Log.e(TAG, "Adding a delay before discovering services due to 133 count of: " + max133RetryCounter);
+                    waitFor(1600);
+                }
+                mGatt.discoverServices();
+            } else {
+                Log.e(TAG, "discoverServices: mGatt is null");
+            }
+        } else {
+            Log.e(TAG, "discoverServices rate limited!");
+        }
+    }
+
+    // big bluetooth gatt callback
     private final BluetoothGattCallback gattCallback = new BluetoothGattCallback() {
 
         @Override
-        public void onConnectionStateChange(BluetoothGatt gatt, final int status, final int newState) {
+        public void onConnectionStateChange(final BluetoothGatt gatt, final int status, final int newState) {
             if (enforceMainThread()) {
                 Handler iHandler = new Handler(Looper.getMainLooper());
                 iHandler.post(new Runnable() {
                                   @Override
-                                  public void run() { //Log.e(TAG, "last disconnect status? " + lastGattStatus);
-                                      android.util.Log.i(TAG, "onConnectionStateChange On Main Thread? " + isOnMainThread());
-                                      switch (newState) {
-                                          case BluetoothProfile.STATE_CONNECTED:
-                                              Log.e(TAG, "STATE_CONNECTED");
-                                              isConnected = true;
-
-                                              if (enforceMainThread()){
-                                                  Handler iHandler = new Handler(Looper.getMainLooper());
-                                                  iHandler.post(new Runnable() {
-                                                      @Override
-                                                      public void run() {
-                                                          android.util.Log.i(TAG, "discoverServices On Main Thread? " + isOnMainThread());
-                                                          if (mGatt != null)
-                                                              mGatt.discoverServices();
-                                                      }
-                                                  });
-                                              } else {
-                                                  android.util.Log.i(TAG, "discoverServices On Main Thread? " + isOnMainThread());
-                                                  if (mGatt != null)
-                                                      mGatt.discoverServices();
-                                              }
-
-
-                                              stopScan();
-                                              scan_interval_timer.cancel();
-                                              keepAlive();
-                                              break;
-                                          case BluetoothProfile.STATE_DISCONNECTED:
-                                              isConnected = false;
-                                              if (isScanning) {
-                                                  stopScan();
-                                              }
-                                              Log.e(TAG, "STATE_DISCONNECTED: " + status);
-                                              if (mGatt != null)
-                                                  mGatt.close();
-                                              mGatt = null;
-                                              if (status == 0 && !encountered133) {// || status == 59) {
-                                                  android.util.Log.i(TAG, "clean disconnect");
-                                                  max133RetryCounter = 0;
-                                                  if (scanConstantly())
-                                                      cycleScan(15000);
-                                              } else if (status == 133 || max133RetryCounter >= max133Retries) {
-                                                  Log.e(TAG, "max133RetryCounter? " + max133RetryCounter);
-                                                  Log.e(TAG, "Encountered 133: " + encountered133);
-                                                  max133RetryCounter = 0;
-                                                  disconnected133++;
-                                                  cycleBT(true);
-                                              } else if (encountered133) {
-                                                  Log.e(TAG, "max133RetryCounter? " + max133RetryCounter);
-                                                  Log.e(TAG, "Encountered 133: " + encountered133);
-                                                  if (scanConstantly())
-                                                      startScan();
-                                                  else
-                                                      cycleScan(0);
-                                                  max133RetryCounter++;
-                                              } else if (status == 129) {
-                                                  forgetDevice();
-                                              } else {
-                                                  if (status == 59) {
-                                                      disconnected59++;
-                                                  }
-                                                  if (disconnected59 > 2) {
-                                                      cycleBT(true);
-                                                  } else {
-                                                      if (scanConstantly())
-                                                          startScan();
-                                                      else
-                                                          cycleScan(0);
-                                                      max133RetryCounter = 0;
-                                                  }
-                                              }
-
-                                              break;
-                                          default:
-                                              Log.e("gattCallback", "STATE_OTHER");
-                                      }
+                                  public void run() {
+                                      processOnStateChange(gatt, status, newState);
                                   }
                               }
                 );
             } else {
-                android.util.Log.i(TAG, "onConnectionStateChange On Main Thread? " + isOnMainThread());
-                switch (newState) {
-                    case BluetoothProfile.STATE_CONNECTED:
-                        Log.e(TAG, "STATE_CONNECTED");
-                        isConnected = true;
+                processOnStateChange(gatt, status, newState);
+            }
+        }
 
-                        if (enforceMainThread()){
-                            Handler iHandler = new Handler(Looper.getMainLooper());
-                            iHandler.post(new Runnable() {
-                                @Override
-                                public void run() {
-                                    android.util.Log.i(TAG, "discoverServices On Main Thread? " + isOnMainThread());
-                                    if (mGatt != null)
-                                        mGatt.discoverServices();
-                                }
-                            });
-                        } else {
-                            android.util.Log.i(TAG, "discoverServices On Main Thread? " + isOnMainThread());
-                            if (mGatt != null)
-                                mGatt.discoverServices();
+
+        private synchronized void processOnStateChange(final BluetoothGatt gatt, final int status, final int newState) {
+            switch (newState) {
+
+
+                case BluetoothProfile.STATE_CONNECTED:
+                    Log.e(TAG, "STATE_CONNECTED");
+                    isConnected = true;
+
+                    // TODO we should already be on the correct thread
+                    if (enforceMainThread()) {
+                        if (!isOnMainThread()) {
+                            Log.d(TAG, "We are not on the main thread so this section is still needed!!");
                         }
+                        Handler iHandler = new Handler(Looper.getMainLooper());
+                        iHandler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                discoverServices();
+                            }
+                        });
+                    } else {
+                        discoverServices();
+                    }
 
 
+                    stopScan();
+                    scan_interval_timer.cancel();
+                    keepAlive();
+                    break;
+
+
+                case BluetoothProfile.STATE_DISCONNECTED:
+                    isConnected = false;
+                    if (isScanning) {
                         stopScan();
-                        scan_interval_timer.cancel();
-                        keepAlive();
-                        break;
-                    case BluetoothProfile.STATE_DISCONNECTED:
-                        isConnected = false;
-                        if (isScanning) {
-                            stopScan();
+                    }
+                    Log.e(TAG, "STATE_DISCONNECTED: " + getStatusName(status));
+
+                    // do we keep failing right after attempting bonding? make sure alwaysAuthenticate is enabled if so..
+                    if (status == BluetoothServices.GATT_CONN_TERMINATE_PEER_USER) {
+                        failures++;
+                        if (!alwaysAuthenticate() && (successes == 0) && (failures > 1) && (lastOnReadCode == 7)) {
+                            Log.wtf(TAG, "Force enabling AlwaysAuthenticate mode!");
+                            force_always_authenticate = true;
                         }
-                        Log.e(TAG, "STATE_DISCONNECTED: " + status);
-                        if (mGatt != null)
+                    }
+
+                    if (mGatt != null) {
+                        try {
                             mGatt.close();
-                        mGatt = null;
-                        if (status == 0 && !encountered133) {// || status == 59) {
-                            android.util.Log.i(TAG, "clean disconnect");
-                            max133RetryCounter = 0;
-                            if (scanConstantly())
-                                cycleScan(15000);
-                        } else if (status == 133 || max133RetryCounter >= max133Retries) {
-                            Log.e(TAG, "max133RetryCounter? " + max133RetryCounter);
-                            Log.e(TAG, "Encountered 133: " + encountered133);
-                            max133RetryCounter = 0;
-                            disconnected133++;
+                        } catch (NullPointerException e) { //
+                        }
+                    }
+
+                    mGatt = null;
+                    if (status == 0 && !encountered133) {// || status == 59) {
+                        Log.i(TAG, "clean disconnect");
+                        max133RetryCounter = 0;
+                        if (scanConstantly())
+                            cycleScan(15000);
+                    } else if (status == 133 || max133RetryCounter >= max133Retries) {
+                        Log.e(TAG, "max133RetryCounter? " + max133RetryCounter);
+                        Log.e(TAG, "Encountered 133: " + encountered133);
+                        max133RetryCounter = 0;
+                        disconnected133++;
+                        cycleBT(true);
+                    } else if (encountered133) {
+                        Log.e(TAG, "max133RetryCounter? " + max133RetryCounter);
+                        Log.e(TAG, "Encountered 133: " + encountered133);
+                        if (scanConstantly())
+                            startScan();
+                        else
+                            cycleScan(0);
+                        max133RetryCounter++;
+                    } else if (status == 129) {
+                        Log.d(TAG, "Forgetting device due to status: " + status);
+                        forgetDevice();
+                    } else {
+                        if (status == 59) {
+                            disconnected59++;
+                        }
+                        if (disconnected59 > 2) {
                             cycleBT(true);
-                        } else if (encountered133) {
-                            Log.e(TAG, "max133RetryCounter? " + max133RetryCounter);
-                            Log.e(TAG, "Encountered 133: " + encountered133);
+                        } else {
                             if (scanConstantly())
                                 startScan();
                             else
                                 cycleScan(0);
-                            max133RetryCounter++;
-                        } else if (status == 129) {
-                            forgetDevice();
-                        } else {
-                            if (status == 59) {
-                                disconnected59++;
-                            }
-                            if (disconnected59 > 2) {
-                                cycleBT(true);
-                            } else {
-                                if (scanConstantly())
-                                    startScan();
-                                else
-                                    cycleScan(0);
-                                max133RetryCounter = 0;
-                            }
+                            max133RetryCounter = 0;
                         }
+                    }
+                    break;
 
-                        break;
-                    default:
-                        Log.e("gattCallback", "STATE_OTHER");
-                }
+
+                default:
+                    Log.e(TAG, "STATE_OTHER: " + newState);
             }
-
-
         }
 
+
         @Override
-        public void onServicesDiscovered(BluetoothGatt gatt, final int status) {
+        public synchronized void onServicesDiscovered(final BluetoothGatt gatt, final int status) {
             if (enforceMainThread()) {
                 Handler iHandler = new Handler(Looper.getMainLooper());
                 iHandler.post(new Runnable() {
                     @Override
                     public void run() {
-                        android.util.Log.i(TAG, "onServicesDiscovered On Main Thread? " + isOnMainThread());
-                        Log.e(TAG, "onServicesDiscovered: " + status);
-                        if (status == BluetoothGatt.GATT_SUCCESS) {
-                            cgmService = mGatt.getService(BluetoothServices.CGMService);
+                        processOnServicesDiscovered(gatt, status);
+                    }
+                });
+            } else {
+                processOnServicesDiscovered(gatt, status);
+            }
+        }
+
+        private synchronized void processOnServicesDiscovered(final BluetoothGatt gatt, final int status) {
+            Log.i(TAG, "onServicesDiscovered On Main Thread? " + isOnMainThread());
+            Log.e(TAG, "onServicesDiscovered: " + getStatusName(status));
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                if (mGatt != null) {
+                    try {
+                        cgmService = mGatt.getService(BluetoothServices.CGMService);
+                        if (cgmService != null) {
                             authCharacteristic = cgmService.getCharacteristic(BluetoothServices.Authentication);
                             controlCharacteristic = cgmService.getCharacteristic(BluetoothServices.Control);
-                            commCharacteristic = cgmService.getCharacteristic(BluetoothServices.Communication);
-                            mBluetoothAdapter.cancelDiscovery();
-
-                            //TODO : ADD option in settings!
-                            if (alwaysAuthenticate() || alwaysUnbond()) {
-                                fullAuthenticate();
-                            } else {
-                                authenticate();
-                            }
-
-                        } else {
-                            Log.w(TAG, "onServicesDiscovered received: " + status);
+                            // TODO can we remove the below comm line
+                            //commCharacteristic = cgmService.getCharacteristic(BluetoothServices.Communication);
                         }
-
-                        if (status == 133) {
-                            encountered133 = true;
-                        }
+                    } catch (NullPointerException e) {
+                        Log.e(TAG, "Got Null pointer in OnServices discovered 2");
                     }
-                });
-            } else {
-                android.util.Log.i(TAG, "onServicesDiscovered On Main Thread? " + isOnMainThread());
-                Log.e(TAG, "onServicesDiscovered: " + status);
-                if (status == BluetoothGatt.GATT_SUCCESS) {
-                    cgmService = mGatt.getService(BluetoothServices.CGMService);
-                    authCharacteristic = cgmService.getCharacteristic(BluetoothServices.Authentication);
-                    controlCharacteristic = cgmService.getCharacteristic(BluetoothServices.Control);
-                    commCharacteristic = cgmService.getCharacteristic(BluetoothServices.Communication);
                     mBluetoothAdapter.cancelDiscovery();
+                }
 
-                    //TODO : ADD option in settings!
-                    if (alwaysAuthenticate() || alwaysUnbond()) {
-                        fullAuthenticate();
-                    } else {
-                        authenticate();
-                    }
-
+                //TODO : ADD option in settings!
+                if (alwaysAuthenticate() || alwaysUnbond()) {
+                    fullAuthenticate();
                 } else {
-                    Log.w(TAG, "onServicesDiscovered received: " + status);
+                    authenticate();
                 }
 
-                if (status == 133) {
-                    encountered133 = true;
-                }
+            } else {
+                Log.w(TAG, "onServicesDiscovered received error status: " + getStatusName(status));
             }
 
-
+            if (status == 133) {
+                encountered133 = true;
+            }
         }
 
         @Override
-        public void onDescriptorWrite(BluetoothGatt gatt, final BluetoothGattDescriptor descriptor, final int status) {
+        public void onDescriptorWrite(final BluetoothGatt gatt, final BluetoothGattDescriptor descriptor, final int status) {
+            Log.e(TAG, "OnDescriptor WRITE started: status: " + getStatusName(status));
             if (enforceMainThread()) {
                 Handler iHandler = new Handler(Looper.getMainLooper());
                 iHandler.post(new Runnable() {
                     @Override
                     public void run() {
-                        android.util.Log.i(TAG, "onDescriptorWrite On Main Thread? " + isOnMainThread());
-                        if (status == BluetoothGatt.GATT_SUCCESS) {
-                            mGatt.writeCharacteristic(descriptor.getCharacteristic());
-                            Log.e(TAG, "Writing descriptor: " + status);
-                        } else {
-                            Log.e(TAG, "Unknown error writing descriptor");
-                        }
-
-                        if (status == 133) {
-                            encountered133 = true;
-                        }
+                        processonDescrptorWrite(gatt, descriptor, status);
                     }
                 });
             } else {
-                android.util.Log.i(TAG, "onDescriptorWrite On Main Thread? " + isOnMainThread());
-                if (status == BluetoothGatt.GATT_SUCCESS) {
+                processonDescrptorWrite(gatt, descriptor, status);
+            }
+        }
+
+        private void processonDescrptorWrite(final BluetoothGatt gatt, final BluetoothGattDescriptor descriptor, final int status) {
+            Log.i(TAG, "onDescriptorWrite On Main Thread? " + isOnMainThread());
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                Log.e(TAG, "Writing to characteristic: " + getUUIDName(descriptor.getCharacteristic().getUuid()));
+                if (mGatt != null) {
                     mGatt.writeCharacteristic(descriptor.getCharacteristic());
-                    Log.e(TAG, "Writing descriptor: " + status);
                 } else {
-                    Log.e(TAG, "Unknown error writing descriptor");
+                    Log.e(TAG, "mGatt was null when trying to write UUID descriptor");
                 }
-
-                if (status == 133) {
-                    encountered133 = true;
-                }
+            } else {
+                Log.e(TAG, "not writing characteristic due to Unknown error writing descriptor");
             }
 
+            if (status == 133) {
+                encountered133 = true;
+            }
+            Log.e(TAG, "OnDescriptor WRITE finished: status: " + getStatusName(status));
         }
 
         @Override
-        public void onCharacteristicWrite(BluetoothGatt gatt, final BluetoothGattCharacteristic characteristic, final int status) {
+        public void onCharacteristicWrite(final BluetoothGatt gatt, final BluetoothGattCharacteristic characteristic, final int status) {
+            Log.e(TAG, "OnCharacteristic WRITE started: "
+                    + getUUIDName(characteristic.getUuid())
+                    + " status: " + getStatusName(status));
+            //Log.e(TAG, "Write Status " + String.valueOf(status));
+            //Log.e(TAG, "Characteristic " + String.valueOf(characteristic.getUuid()));
+
             if (enforceMainThread()) {
                 Handler iHandler = new Handler(Looper.getMainLooper());
                 iHandler.post(new Runnable() {
                     @Override
                     public void run() {
-                        Log.e(TAG, "Success Write " + String.valueOf(status));
-                        //Log.e(TAG, "Characteristic " + String.valueOf(characteristic.getUuid()));
-                        android.util.Log.i(TAG, "onCharacteristicWrite On Main Thread? " + isOnMainThread());
-
-                        if (status == BluetoothGatt.GATT_SUCCESS) {
-                            if (String.valueOf(characteristic.getUuid()).equalsIgnoreCase(String.valueOf(authCharacteristic.getUuid()))) {
-                                android.util.Log.i(TAG, "Char Value: " + Arrays.toString(characteristic.getValue()));
-                                android.util.Log.i(TAG, "auth? " + String.valueOf(characteristic.getUuid()));
-                                if (characteristic.getValue() != null && characteristic.getValue()[0] != 0x6) {
-                                    mGatt.readCharacteristic(characteristic);
-                                }
-                            } else {
-                                android.util.Log.i(TAG, "control? " + String.valueOf(characteristic.getUuid()));
-                                android.util.Log.i(TAG, "status? " + status);
-                            }
-                        }
-
-                        if (status == 133) {
-                            encountered133 = true;
-                        }
+                        processOnCharacteristicWrite(gatt, characteristic, status);
                     }
                 });
-
             } else {
-                Log.e(TAG, "Success Write " + String.valueOf(status));
-                //Log.e(TAG, "Characteristic " + String.valueOf(characteristic.getUuid()));
-                android.util.Log.i(TAG, "onCharacteristicWrite On Main Thread? " + isOnMainThread());
+                processOnCharacteristicWrite(gatt, characteristic, status);
+            }
 
-                if (status == BluetoothGatt.GATT_SUCCESS) {
-                    if (String.valueOf(characteristic.getUuid()).equalsIgnoreCase(String.valueOf(authCharacteristic.getUuid()))) {
-                        android.util.Log.i(TAG, "Char Value: " + Arrays.toString(characteristic.getValue()));
-                        android.util.Log.i(TAG, "auth? " + String.valueOf(characteristic.getUuid()));
-                        if (characteristic.getValue() != null && characteristic.getValue()[0] != 0x6) {
-                            mGatt.readCharacteristic(characteristic);
+
+        }
+
+        private synchronized void processOnCharacteristicWrite(final BluetoothGatt gatt, final BluetoothGattCharacteristic characteristic, final int status) {
+            Log.i(TAG, "processOnCharacteristicWrite On Main Thread? " + isOnMainThread());
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                // is this being written to the auth characterstic?
+                if (String.valueOf(characteristic.getUuid()).equalsIgnoreCase(String.valueOf(authCharacteristic.getUuid()))) {
+                    Log.i(TAG, "Auth ow Char Value: " + Arrays.toString(characteristic.getValue()));
+                    Log.i(TAG, "Auth ow auth? name: " + getUUIDName(characteristic.getUuid()));
+                    if (characteristic.getValue() != null) {
+                        Log.e(TAG, "Auth ow: got opcode: " + characteristic.getValue()[0]);
+                        if (characteristic.getValue()[0] != KeepAliveTxMessage.opcode) { /* opcode keepalive? */
+                            if (delayOn133Errors && max133RetryCounter > 1) {
+                                // should we only be looking at disconnected 133 here?
+                                Log.e(TAG, "Adding a delay before reading characteristic with 133 count of: " + max133RetryCounter);
+                                waitFor(300);
+                            }
+                            if (mGatt != null) {
+                                mGatt.readCharacteristic(characteristic);
+                            } else {
+                                Log.e(TAG, "mGatt was null when trying to read KeepAliveTxMessage");
+                            }
+                        } else {
+                            Log.e(TAG, "Auth ow: got keepalive");
+                            if (useKeepAlive) {
+                                Log.e(TAG, "Keepalive written, now trying bond");
+                                performBondWrite(characteristic);
+                            }
                         }
                     } else {
-                        android.util.Log.i(TAG, "control? " + String.valueOf(characteristic.getUuid()));
-                        android.util.Log.i(TAG, "status? " + status);
+                        Log.e(TAG, "Auth ow: got NULL opcode!");
                     }
-                }
-
-                if (status == 133) {
-                    encountered133 = true;
+                } else {
+                    Log.i(TAG, "ow unexpected? characteristic: "+ getUUIDName(characteristic.getUuid()));
+                  //  Log.i(TAG, "ow status? " + status);
                 }
             }
 
-
+            if (status == 133) {
+                encountered133 = true;
+            }
+            Log.e(TAG, "OnCharacteristic WRITE finished: status: " + getStatusName(status));
         }
 
         @Override
-        public void onCharacteristicRead(BluetoothGatt gatt, final BluetoothGattCharacteristic characteristic, final int status) {
+        public void onCharacteristicRead(final BluetoothGatt gatt, final BluetoothGattCharacteristic characteristic, final int status) {
+            Log.e(TAG, "OnCharacteristic READ started: " + getUUIDName(characteristic.getUuid()) + " status: " + status);
             if (enforceMainThread()) {
                 Handler iHandler = new Handler(Looper.getMainLooper());
                 iHandler.post(new Runnable() {
                     @Override
                     public void run() {
-                        Log.e(TAG, "ReadStatus: " + String.valueOf(status));
-                        android.util.Log.i(TAG, "onCharacteristicRead On Main Thread? " + isOnMainThread());
-
-                        if (status == BluetoothGatt.GATT_SUCCESS) {
-                            Log.e(TAG, "CharBytes-or " + Arrays.toString(characteristic.getValue()));
-                            android.util.Log.i(TAG, "CharHex-or " + Extensions.bytesToHex(characteristic.getValue()));
-
-                            byte[] buffer = characteristic.getValue();
-                            byte code = buffer[0];
-                            Transmitter defaultTransmitter = new Transmitter(prefs.getString("dex_txid", "ABCDEF"));
-                            mBluetoothAdapter = mBluetoothManager.getAdapter();
-
-                            switch (code) {
-                                case 5:
-                                    authStatus = new AuthStatusRxMessage(characteristic.getValue());
-                                    if (authStatus.authenticated == 1 && authStatus.bonded == 1 && isBondedOrBonding == true) {
-                                        isBondedOrBonding = true;
-                                        getSensorData();
-                                    } else if (authStatus.authenticated == 1 && authStatus.bonded == 2) {
-                                        android.util.Log.i(TAG, "Let's Bond!");
-                                        BondRequestTxMessage bondRequest = new BondRequestTxMessage();
-                                        characteristic.setValue(bondRequest.byteSequence);
-                                        mGatt.writeCharacteristic(characteristic);
-                                        isBondedOrBonding = true;
-                                        device.createBond();
-                                    } else {
-                                        android.util.Log.i(TAG, "Transmitter NOT already authenticated");
-                                        authRequest = new AuthRequestTxMessage();
-                                        characteristic.setValue(authRequest.byteSequence);
-                                        android.util.Log.i(TAG, authRequest.byteSequence.toString());
-                                        mGatt.writeCharacteristic(characteristic);
-                                    }
-                                    break;
-
-                                case 3:
-                                    AuthChallengeRxMessage authChallenge = new AuthChallengeRxMessage(characteristic.getValue());
-                                    if (authRequest == null) {
-                                        authRequest = new AuthRequestTxMessage();
-                                    }
-                                    android.util.Log.i(TAG, "tokenHash " + Arrays.toString(authChallenge.tokenHash));
-                                    android.util.Log.i(TAG, "singleUSe " + Arrays.toString(calculateHash(authRequest.singleUseToken)));
-
-                                    byte[] challengeHash = calculateHash(authChallenge.challenge);
-                                    android.util.Log.d(TAG, "challenge hash" + Arrays.toString(challengeHash));
-                                    if (challengeHash != null) {
-                                        android.util.Log.d(TAG, "Transmitter try auth challenge");
-                                        AuthChallengeTxMessage authChallengeTx = new AuthChallengeTxMessage(challengeHash);
-                                        android.util.Log.i(TAG, "Auth Challenge: " + Arrays.toString(authChallengeTx.byteSequence));
-                                        characteristic.setValue(authChallengeTx.byteSequence);
-                                        mGatt.writeCharacteristic(characteristic);
-                                    }
-                                    break;
-
-                                default:
-                                    android.util.Log.i(TAG, code + " - Transmitter NOT already authenticated");
-                                    authRequest = new AuthRequestTxMessage();
-                                    characteristic.setValue(authRequest.byteSequence);
-                                    android.util.Log.i(TAG, authRequest.byteSequence.toString());
-                                    mGatt.writeCharacteristic(characteristic);
-                                    break;
-                            }
-
-                        }
-
-                        if (status == 133) {
-                            encountered133 = true;
-                        }
+                        processOnCharacteristicRead(gatt, characteristic, status);
                     }
                 });
             } else {
-                Log.e(TAG, "ReadStatus: " + String.valueOf(status));
-                android.util.Log.i(TAG, "onCharacteristicRead On Main Thread? " + isOnMainThread());
+                processOnCharacteristicRead(gatt, characteristic, status);
+            }
+        }
 
-                if (status == BluetoothGatt.GATT_SUCCESS) {
-                    Log.e(TAG, "CharBytes-or " + Arrays.toString(characteristic.getValue()));
-                    android.util.Log.i(TAG, "CharHex-or " + Extensions.bytesToHex(characteristic.getValue()));
+        private synchronized void performBondWrite(BluetoothGattCharacteristic characteristic)
+        {
+            Log.d(TAG,"performBondWrite() started");
+            final BondRequestTxMessage bondRequest = new BondRequestTxMessage();
+            characteristic.setValue(bondRequest.byteSequence);
+            if (mGatt != null) {
+                mGatt.writeCharacteristic(characteristic);
+            } else {
+                Log.e(TAG, "mGatt was null when trying to write bondRequest");
+            }
+            if (delayOnBond) {
+                Log.e(TAG, "Delaying before bond");
+                waitFor(1000);
+                Log.e(TAG, "Delay finished");
+            }
+            isBondedOrBonding = true;
+            device.createBond();
+            Log.d(TAG,"performBondWrite() finished");
+        }
 
-                    byte[] buffer = characteristic.getValue();
-                    byte code = buffer[0];
-                    Transmitter defaultTransmitter = new Transmitter(prefs.getString("dex_txid", "ABCDEF"));
-                    mBluetoothAdapter = mBluetoothManager.getAdapter();
+        private synchronized void processOnCharacteristicRead (BluetoothGatt gatt,
+                                                  final BluetoothGattCharacteristic characteristic, final int status)
+        {
+            Log.e(TAG, "processOnCRead: Status value: " + getStatusName(status) + (isOnMainThread() ? " on main thread" : " not on main thread"));
 
-                    switch (code) {
-                        case 5:
-                            authStatus = new AuthStatusRxMessage(characteristic.getValue());
-                            if (authStatus.authenticated == 1 && authStatus.bonded == 1 && isBondedOrBonding == true) {
-                                isBondedOrBonding = true;
-                                getSensorData();
-                            } else if (authStatus.authenticated == 1 && authStatus.bonded == 2) {
-                                android.util.Log.i(TAG, "Let's Bond!");
-                                BondRequestTxMessage bondRequest = new BondRequestTxMessage();
-                                characteristic.setValue(bondRequest.byteSequence);
-                                mGatt.writeCharacteristic(characteristic);
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                Log.e(TAG, "CharBytes-or " + Arrays.toString(characteristic.getValue()));
+                Log.i(TAG, "CharHex-or " + Extensions.bytesToHex(characteristic.getValue()));
+
+                final byte[] buffer = characteristic.getValue();
+
+                if (buffer.length == 0) {
+                    Log.e(TAG, "OnCharacteristic READ Got ZERO sized buffer: status: " + getStatusName(status));
+                    return;
+                }
+
+                byte code = buffer[0];
+                //Transmitter defaultTransmitter = new Transmitter(prefs.getString("dex_txid", "ABCDEF"));
+                Log.e(TAG,"processOncRead: code:"+code);
+                mBluetoothAdapter = mBluetoothManager.getAdapter();
+                lastOnReadCode = code;
+                switch (code) {
+                    case 5:
+                        authStatus = new AuthStatusRxMessage(buffer);
+
+                        // TODO KS check here
+                        if (authStatus.authenticated == 1 && authStatus.bonded == 1 && !isBondedOrBonding) {
+                            Log.e(TAG, "Special bonding test case!");
+
+                            if (tryPreBondWithDelay) {
+                                Log.e(TAG,"Trying prebonding with delay!");
                                 isBondedOrBonding = true;
                                 device.createBond();
+                                waitFor(1600);
+                                Log.e(TAG,"Prebond delay finished");
+                            }
+
+                            getTransmitterDetails(); // try to refresh on the off-chance
+                        }
+
+                        if (ignoreLocalBondingState) Log.e(TAG,"Ignoring local bonding state!!");
+
+
+                        if (authStatus.authenticated == 1 && authStatus.bonded == 1 && (isBondedOrBonding || ignoreLocalBondingState)) {
+                            // TODO check bonding logic here and above
+                            isBondedOrBonding = true; // statement has no effect?
+                            getSensorData();
+                        } else if ((authStatus.authenticated == 1 && authStatus.bonded == 2)
+                                || (authStatus.authenticated == 1 && authStatus.bonded == 1 && !isBondedOrBonding)) {
+                            Log.i(TAG, "Let's Bond! " + (isBondedOrBonding ? "locally bonded" : "not locally bonded"));
+
+                            if (useKeepAlive) {
+                                Log.e(TAG,"Trying keepalive..");
+                                final KeepAliveTxMessage keepAliveRequest = new KeepAliveTxMessage(25);
+                                characteristic.setValue(keepAliveRequest.byteSequence);
+                                if (mGatt != null) {
+                                    mGatt.writeCharacteristic(characteristic);
+                                } else {
+                                    Log.e(TAG, "mGatt was null when trying to write keepAliveRequest");
+                                }
                             } else {
-                                android.util.Log.i(TAG, "Transmitter NOT already authenticated");
-                                authRequest = new AuthRequestTxMessage();
-                                characteristic.setValue(authRequest.byteSequence);
-                                android.util.Log.i(TAG, authRequest.byteSequence.toString());
+                             performBondWrite(characteristic);
+                            }
+                        } else {
+                            Log.i(TAG, "Transmitter NOT already authenticated");
+                            sendAuthRequestTxMessage(gatt, characteristic);
+                        }
+                        break;
+
+                    case 3:
+                        AuthChallengeRxMessage authChallenge = new AuthChallengeRxMessage(characteristic.getValue());
+                        if (authRequest == null) {
+                            authRequest = new AuthRequestTxMessage(getTokenSize());
+                        }
+                        Log.i(TAG, "tokenHash " + Arrays.toString(authChallenge.tokenHash));
+                        Log.i(TAG, "singleUSe " + Arrays.toString(calculateHash(authRequest.singleUseToken)));
+
+                        byte[] challengeHash = calculateHash(authChallenge.challenge);
+                        Log.d(TAG, "challenge hash" + Arrays.toString(challengeHash));
+                        if (challengeHash != null) {
+                            Log.d(TAG, "Transmitter try auth challenge");
+                            AuthChallengeTxMessage authChallengeTx = new AuthChallengeTxMessage(challengeHash);
+                            Log.i(TAG, "Auth Challenge: " + Arrays.toString(authChallengeTx.byteSequence));
+                            characteristic.setValue(authChallengeTx.byteSequence);
+                            if (mGatt != null) {
                                 mGatt.writeCharacteristic(characteristic);
+                            } else {
+                                Log.e(TAG, "mGatt was null when trying to write in opcode 3 reply");
                             }
-                            break;
+                        }
+                        break;
 
-                        case 3:
-                            AuthChallengeRxMessage authChallenge = new AuthChallengeRxMessage(characteristic.getValue());
-                            if (authRequest == null) {
-                                authRequest = new AuthRequestTxMessage();
+                    //case 7:
+                    //    Log.d(TAG,"Received Bond request - trying bond");
+                    //    isBondedOrBonding = true;
+                    //   Log.e(TAG,"Bond state pre: "+device.getBondState());
+                    //    device.createBond();
+                    //    Log.e(TAG,"Bond state post: "+device.getBondState());
+                    //    break;
+
+                    default:
+                        if ((code == 7) && (delayOnBond)) {
+                            Log.e(TAG, "Delaying response to onRead for code: " + code);
+                            waitFor(1500);
+                            Log.e(TAG, "Delayed response to onRead finished");
+                        }
+
+                        if ((code == 7) && (tryOnDemandBondWithDelay)) {
+                            Log.e(TAG,"Trying ondemand bond with delay!");
+                            isBondedOrBonding = true;
+                            waitingBondConfirmation = 1; // waiting
+                            device.createBond();
+
+                            if (simpleBondWait) {
+                                Log.e(TAG, "Using simple wait for 15 secs");
+                                waitFor(15000); // are we ok to do this on this thread?
+                            } else {
+                                for (int counter = 0; counter < 12; counter++) {
+                                    if (waitingBondConfirmation != 1) {
+                                        Log.e(TAG, "Received bond confirmation after: " + counter + " seconds. status: " + waitingBondConfirmation);
+                                        waitFor(5000); // extra delay
+                                        break;
+                                    } else {
+                                        waitFor(1000);
+                                    }
+                                }
                             }
-                            android.util.Log.i(TAG, "tokenHash " + Arrays.toString(authChallenge.tokenHash));
-                            android.util.Log.i(TAG, "singleUSe " + Arrays.toString(calculateHash(authRequest.singleUseToken)));
 
-                            byte[] challengeHash = calculateHash(authChallenge.challenge);
-                            android.util.Log.d(TAG, "challenge hash" + Arrays.toString(challengeHash));
-                            if (challengeHash != null) {
-                                android.util.Log.d(TAG, "Transmitter try auth challenge");
-                                AuthChallengeTxMessage authChallengeTx = new AuthChallengeTxMessage(challengeHash);
-                                android.util.Log.i(TAG, "Auth Challenge: " + Arrays.toString(authChallengeTx.byteSequence));
-                                characteristic.setValue(authChallengeTx.byteSequence);
-                                mGatt.writeCharacteristic(characteristic);
-                            }
-                            break;
 
-                        default:
-                            android.util.Log.i(TAG, code + " - Transmitter NOT already authenticated");
-                            authRequest = new AuthRequestTxMessage();
-                            characteristic.setValue(authRequest.byteSequence);
-                            android.util.Log.i(TAG, authRequest.byteSequence.toString());
-                            mGatt.writeCharacteristic(characteristic);
-                            break;
-                    }
+                            Log.e(TAG,"ondemandbond delay finished");
+                        }
 
+                        Log.i(TAG, "Read code: " + code + " - Transmitter NOT already authenticated?");
+                        sendAuthRequestTxMessage(gatt, characteristic);
+                        break;
                 }
 
-                if (status == 133) {
-                    encountered133 = true;
-                }
             }
 
-
+            if (status == 133) {
+                encountered133 = true;
+            }
+            Log.e(TAG, "OnCharacteristic READ finished: status: " + getStatusName(status));
         }
+
+
 
         @Override
         // Characteristic notification
         public void onCharacteristicChanged(final BluetoothGatt gatt, final BluetoothGattCharacteristic characteristic) {
+            Log.e(TAG, "OnCharacteristic CHANGED started: " + getUUIDName(characteristic.getUuid()));
             if (enforceMainThread()) {
                 Handler iHandler = new Handler(Looper.getMainLooper());
                 iHandler.post(new Runnable() {
                     @Override
                     public void run() {
-                        Log.e(TAG, "CharBytes-nfy" + Arrays.toString(characteristic.getValue()));
-                        android.util.Log.i(TAG, "CharHex-nfy" + Extensions.bytesToHex(characteristic.getValue()));
-
-                        android.util.Log.i(TAG, "onCharacteristicChanged On Main Thread? " + isOnMainThread());
-
-                        byte[] buffer = characteristic.getValue();
-                        byte firstByte = buffer[0];
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && gatt != null) {
-                            mGatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH);
-                        }
-                        if (firstByte == 0x2f) {
-                            SensorRxMessage sensorRx = new SensorRxMessage(characteristic.getValue());
-
-                            ByteBuffer sensorData = ByteBuffer.allocate(buffer.length);
-                            sensorData.order(ByteOrder.LITTLE_ENDIAN);
-                            sensorData.put(buffer, 0, buffer.length);
-
-                            int sensor_battery_level = 0;
-                            if (sensorRx.status == TransmitterStatus.BRICKED) {
-                                //TODO Handle this in UI/Notification
-                                sensor_battery_level = 206; //will give message "EMPTY"
-                            } else if (sensorRx.status == TransmitterStatus.LOW) {
-                                sensor_battery_level = 209; //will give message "LOW"
-                            } else {
-                                sensor_battery_level = 216; //no message, just system status "OK"
-                            }
-
-                            //Log.e(TAG, "filtered: " + sensorRx.filtered);
-                            Log.e(TAG, "unfiltered: " + sensorRx.unfiltered);
-                            disconnected133=0;
-                            disconnected59=0;
-                            doDisconnectMessage(gatt, characteristic);
-                            processNewTransmitterData(sensorRx.unfiltered, sensorRx.filtered, sensor_battery_level, new Date().getTime());
-                        }
+                        processRxCharacteristic(gatt, characteristic);
                     }
                 });
             } else {
-                Log.e(TAG, "CharBytes-nfy" + Arrays.toString(characteristic.getValue()));
-                android.util.Log.i(TAG, "CharHex-nfy" + Extensions.bytesToHex(characteristic.getValue()));
+                processRxCharacteristic(gatt, characteristic);
+            }
+        }
 
-                android.util.Log.i(TAG, "onCharacteristicChanged On Main Thread? " + isOnMainThread());
 
-                byte[] buffer = characteristic.getValue();
-                byte firstByte = buffer[0];
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && gatt != null) {
-                    mGatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH);
+        private synchronized void processRxCharacteristic(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
+
+            Log.i(TAG, "onCharacteristicChanged On Main Thread? " + isOnMainThread());
+            Log.e(TAG, "CharBytes-nfy" + Arrays.toString(characteristic.getValue()));
+            Log.i(TAG, "CharHex-nfy" + Extensions.bytesToHex(characteristic.getValue()));
+
+
+            byte[] buffer = characteristic.getValue();
+            byte firstByte = buffer[0];
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && gatt != null) {
+                gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH);
+            }
+            Log.d(TAG, "Received opcode reply: " + JoH.bytesToHex(new byte[] { firstByte }));
+            if (firstByte == 0x2f) {
+                SensorRxMessage sensorRx = new SensorRxMessage(characteristic.getValue());
+
+                ByteBuffer sensorData = ByteBuffer.allocate(buffer.length);
+                sensorData.order(ByteOrder.LITTLE_ENDIAN);
+                sensorData.put(buffer, 0, buffer.length);
+
+                int sensor_battery_level = 0;
+                if (sensorRx.status == TransmitterStatus.BRICKED) {
+                    //TODO Handle this in UI/Notification
+                    sensor_battery_level = 206; //will give message "EMPTY"
+                } else if (sensorRx.status == TransmitterStatus.LOW) {
+                    sensor_battery_level = 209; //will give message "LOW"
+                } else {
+                    sensor_battery_level = 216; //no message, just system status "OK"
                 }
-                if (firstByte == 0x2f) {
-                    SensorRxMessage sensorRx = new SensorRxMessage(characteristic.getValue());
 
-                    ByteBuffer sensorData = ByteBuffer.allocate(buffer.length);
-                    sensorData.order(ByteOrder.LITTLE_ENDIAN);
-                    sensorData.put(buffer, 0, buffer.length);
-
-                    int sensor_battery_level = 0;
-                    if (sensorRx.status == TransmitterStatus.BRICKED) {
-                        //TODO Handle this in UI/Notification
-                        sensor_battery_level = 206; //will give message "EMPTY"
-                    } else if (sensorRx.status == TransmitterStatus.LOW) {
-                        sensor_battery_level = 209; //will give message "LOW"
-                    } else {
-                        sensor_battery_level = 216; //no message, just system status "OK"
-                    }
-
-                    //Log.e(TAG, "filtered: " + sensorRx.filtered);
-                    disconnected133=0;
-                    disconnected59=0;
-                    Log.e(TAG, "unfiltered: " + sensorRx.unfiltered);
+                //Log.e(TAG, "filtered: " + sensorRx.filtered);
+                disconnected133 = 0; // reset as we got a reading
+                disconnected59 = 0;
+                lastState = "Got data OK: " + JoH.hourMinuteString();
+                successes++;
+                failures=0;
+                Log.e(TAG, "SUCCESS!! unfiltered: " + sensorRx.unfiltered + " timestamp: " + sensorRx.timestamp + " " + JoH.qs((double)sensorRx.timestamp / 86400, 1) + " days");
+                if (sensorRx.unfiltered == 0) {
+                    lastState = "Transmitter sent raw sensor value of 0 !! This isn't good. " + JoH.hourMinuteString();
+                }
+                last_transmitter_timestamp = sensorRx.timestamp;
+                if ((getVersionDetails) && (!haveFirmwareDetails())) {
+                    doVersionRequestMessage(gatt, characteristic);
+                } else if ((getBatteryDetails) && (getBatteryStatusNow || !haveCurrentBatteryStatus())) {
+                    doBatteryInfoRequestMessage(gatt, characteristic);
+                } else {
                     doDisconnectMessage(gatt, characteristic);
-                    processNewTransmitterData(sensorRx.unfiltered, sensorRx.filtered, sensor_battery_level, new Date().getTime());
+                }
+                processNewTransmitterData(sensorRx.unfiltered, sensorRx.filtered, sensor_battery_level, new Date().getTime());
+                // was this the first success after we force enabled always_authenticate?
+                if (force_always_authenticate && (successes == 1)) {
+                    Log.wtf(TAG, "We apparently only got a reading after forcing the Always Authenticate option");
+                    Home.toaststaticnext("Please Enable G5 Always Authenticate debug option!");
+                    // TODO should we actually change the settings here?
+                }
+            } else if (firstByte == GlucoseRxMessage.opcode) {
+                // TODO doesn't support firmware version reading in GlucoseRX
+                disconnected133 = 0; // reset as we got a reading
+                disconnected59 = 0;
+                GlucoseRxMessage glucoseRx = new GlucoseRxMessage(characteristic.getValue());
+                Log.e(TAG, "SUCCESS!! glucose unfiltered: " + glucoseRx.unfiltered);
+                successes++;
+                failures=0;
+                doDisconnectMessage(gatt, characteristic);
+                processNewTransmitterData(glucoseRx.unfiltered, glucoseRx.filtered, 216, new Date().getTime());
+            } else if (firstByte == VersionRequestRxMessage.opcode) {
+                if (!setStoredFirmwareBytes(defaultTransmitter.transmitterId, characteristic.getValue(), true)) {
+                    Log.wtf(TAG, "Could not save out firmware version!");
+                }
+                doDisconnectMessage(gatt, characteristic);
+            } else if (firstByte == BatteryInfoRxMessage.opcode) {
+                if (!setStoredBatteryBytes(defaultTransmitter.transmitterId, characteristic.getValue())) {
+                    Log.wtf(TAG, "Could not save out battery data!");
+                }
+                getBatteryStatusNow = false;
+                doDisconnectMessage(gatt, characteristic);
+            } else {
+                Log.e(TAG, "onCharacteristic CHANGED unexpected opcode: " + firstByte + " (have not disconnected!)");
+            }
+            Log.e(TAG, "OnCharacteristic CHANGED finished: ");
+        }
+    };
+    // end BluetoothGattCallback
+
+    private boolean haveFirmwareDetails() {
+        return defaultTransmitter.transmitterId.length() == 6 && getStoredFirmwareBytes(defaultTransmitter.transmitterId).length >= 10;
+    }
+
+    public final static String G5_FIRMWARE_MARKER = "g5-firmware-";
+    public final static String G5_BATTERY_FROM_MARKER = "g5-battery-from";
+
+    private boolean haveCurrentBatteryStatus() {
+        return defaultTransmitter.transmitterId.length() == 6 && (JoH.msSince(PersistentStore.getLong(G5_BATTERY_FROM_MARKER + defaultTransmitter.transmitterId)) < BATTERY_READ_PERIOD_MS);
+    }
+
+    private static byte[] getStoredFirmwareBytes(String transmitterId) {
+        if (transmitterId.length() != 6) return new byte[0];
+        return PersistentStore.getBytes("g5-firmware-" + transmitterId);
+    }
+
+    // from wear sync
+    public static boolean setStoredFirmwareBytes(String transmitterId, byte[] data) {
+        return setStoredFirmwareBytes(transmitterId, data, false);
+    }
+
+    public static boolean setStoredFirmwareBytes(String transmitterId, byte[] data, boolean from_bluetooth) {
+        if (from_bluetooth) UserError.Log.e(TAG, "Store: VersionRX dbg: " + JoH.bytesToHex(data));
+        if (transmitterId.length() != 6) return false;
+        if (data.length < 10) return false;
+        if (JoH.ratelimit("store-firmware-bytes", 60)) {
+            PersistentStore.setBytes("g5-firmware-" + transmitterId, data);
+        }
+        return true;
+    }
+
+    public static final String G5_BATTERY_MARKER = "g5-battery-";
+    public static final String G5_BATTERY_LEVEL_MARKER = "g5-battery-level-";
+
+    public synchronized static boolean setStoredBatteryBytes(String transmitterId, byte[] data) {
+        UserError.Log.e(TAG, "Store: BatteryRX dbg: " + JoH.bytesToHex(data));
+        if (transmitterId.length() != 6) return false;
+        if (data.length < 10) return false;
+        final BatteryInfoRxMessage batteryInfoRxMessage = new BatteryInfoRxMessage(data);
+        Log.wtf(TAG, "Saving battery data: " +batteryInfoRxMessage.toString());
+        PersistentStore.setBytes(G5_BATTERY_MARKER + transmitterId, data);
+        PersistentStore.setLong(G5_BATTERY_FROM_MARKER + transmitterId, JoH.tsl());
+
+        // TODO logic also needs to handle battery replacements of same transmitter id
+        final long old_level = PersistentStore.getLong(G5_BATTERY_LEVEL_MARKER + transmitterId);
+        if ((batteryInfoRxMessage.voltagea < old_level) || (old_level == 0)) {
+            if (batteryInfoRxMessage.voltagea < LOW_BATTERY_WARNING_LEVEL) {
+                if (JoH.pratelimit("g5-low-battery-warning", 40000)) {
+                    final boolean loud = !PowerStateReceiver.is_power_connected();
+                    JoH.showNotification("G5 Battery Low", "G5 Transmitter battery has dropped to: " + batteryInfoRxMessage.voltagea + " it may fail soon", null, 770, loud, loud, false);
                 }
             }
+            PersistentStore.setLong(G5_BATTERY_LEVEL_MARKER + transmitterId, batteryInfoRxMessage.voltagea);
+        }
+
+        return true;
+    }
+
+    public static BatteryInfoRxMessage getBatteryDetails(String tx_id) {
+        try {
+            return new BatteryInfoRxMessage(PersistentStore.getBytes(G5_BATTERY_MARKER + tx_id));
+        } catch (Exception e) {
+            Log.wtf(TAG, "Exception in getFirmwareDetails: " + e);
+            return null;
+        }
+    }
+
+    public static VersionRequestRxMessage getFirmwareDetails(String tx_id) {
+        try {
+            byte[] stored = getStoredFirmwareBytes(tx_id);
+            if ((stored != null) && (stored.length > 9)) {
+                return new VersionRequestRxMessage(stored);
+            }
+        } catch (Exception e) {
+            Log.wtf(TAG, "Exception in getFirmwareDetails: " + e);
+            return null;
+        }
+        return null;
+    }
+
+    public static String getFirmwareVersionString(String tx_id) {
+        VersionRequestRxMessage vr = getFirmwareDetails(tx_id);
+        if (vr != null) {
+            return "FW: " + vr.firmware_version_string;
+        } else {
+            return "";
+        }
+    }
 
 
+    private synchronized void sendAuthRequestTxMessage(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
+        Log.e(TAG, "Sending new AuthRequestTxMessage to " + getUUIDName(characteristic.getUuid()) + " ...");
+        authRequest = new AuthRequestTxMessage(getTokenSize());
+        Log.i(TAG, "AuthRequestTX: " + JoH.bytesToHex(authRequest.byteSequence));
+        characteristic.setValue(authRequest.byteSequence);
+        if (gatt != null) {
+            gatt.writeCharacteristic(characteristic);
+        } else {
+            Log.e(TAG, "Cannot send AuthRequestTx as supplied gatt is null!");
+        }
+    }
+
+    private final BroadcastReceiver mPairingRequestRecevier = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if ((device != null) && (device.getAddress() != null)) {
+                Log.e(TAG,"Processing mPairingRequestReceiver");
+                JoH.doPairingRequest(context, this, intent, device.getAddress());
+            } else {
+                Log.e(TAG,"Received pairing request but device was null");
+            }
         }
     };
 
     private synchronized void processNewTransmitterData(int raw_data , int filtered_data,int sensor_battery_level, long captureTime) {
 
-        TransmitterData transmitterData = TransmitterData.create(raw_data, sensor_battery_level, captureTime);
+        final TransmitterData transmitterData = TransmitterData.create(raw_data, filtered_data, sensor_battery_level, captureTime);
         if (transmitterData == null) {
             Log.e(TAG, "TransmitterData.create failed: Duplicate packet");
             return;
@@ -1315,15 +1707,23 @@ public class G5CollectionService extends Service {
         //TODO : LOG if unfiltered or filtered values are zero
 
         Sensor.updateBatteryLevel(sensor, transmitterData.sensor_battery_level);
-        android.util.Log.i("timestamp create", Long.toString(transmitterData.timestamp));
+        Log.i(TAG,"timestamp create: "+ Long.toString(transmitterData.timestamp));
 
-        BgReading.create(transmitterData.raw_data, filtered_data, this, transmitterData.timestamp);
+        BgReading.create(transmitterData.raw_data, transmitterData.filtered_data, this, transmitterData.timestamp);
+
+        Log.d(TAG,"Dex raw_data "+ Double.toString(transmitterData.raw_data));//KS
+        Log.d(TAG,"Dex filtered_data "+ Double.toString(transmitterData.filtered_data));//KS
+        Log.d(TAG,"Dex sensor_battery_level "+ Double.toString(transmitterData.sensor_battery_level));//KS
+        Log.d(TAG,"Dex timestamp "+ JoH.dateTimeText(transmitterData.timestamp));//KS
+
+        static_last_timestamp =  transmitterData.timestamp;
+
     }
 
     @SuppressLint("GetInstance")
-    private byte[] calculateHash(byte[] data) {
+    private synchronized byte[] calculateHash(byte[] data) {
         if (data.length != 8) {
-            android.util.Log.e("Decrypt", "Data length should be exactly 8.");
+            Log.e(TAG, "Decrypt Data length should be exactly 8.");
             return null;
         }
 
@@ -1357,6 +1757,7 @@ public class G5CollectionService extends Service {
     }
 
     private byte[] cryptKey() {
+        if (defaultTransmitter.transmitterId.length() != 6) Log.e(TAG,"cryptKey: Wrong transmitter id length!: "+defaultTransmitter.transmitterId.length());
         try {
             return ("00" + defaultTransmitter.transmitterId + "00" + defaultTransmitter.transmitterId).getBytes("UTF-8");
         } catch (UnsupportedEncodingException e) {
@@ -1365,8 +1766,7 @@ public class G5CollectionService extends Service {
         return null;
     }
 
-    public static boolean isOnMainThread()
-    {
+    private static boolean isOnMainThread() {
         return Looper.getMainLooper().getThread() == Thread.currentThread();
     }
 
@@ -1375,10 +1775,23 @@ public class G5CollectionService extends Service {
         long timeToExpected  = (300*1000 - (millisecondsSinceTx%(300*1000)));
         long expectedTxTime = new Date().getTime() + timeToExpected - 3*1000;
         Log.e(TAG, "millisecondsSinceTxAd: " + millisecondsSinceTx );
+        Log.e(TAG, "advertiseTimeMS.get(0): " + advertiseTimeMS.get(0) + " " + JoH.dateTimeText(advertiseTimeMS.get(0)));
+        Log.e(TAG, "timeInMillisecondsOfLastSuccessfulSensorRead: " + " " + timeInMillisecondsOfLastSuccessfulSensorRead + JoH.dateTimeText(timeInMillisecondsOfLastSuccessfulSensorRead) );
         //Log.e(TAG, "timeToExpected: " + timeToExpected );
         //Log.e(TAG, "expectedTxTime: " + expectedTxTime );
 
         return expectedTxTime;
+    }
+
+    protected void waitFor(final int millis) {
+        synchronized (mLock) {
+            try {
+                Log.e(TAG, "waiting " + millis + "ms");
+                mLock.wait(millis);
+            } catch (final InterruptedException e) {
+                Log.e(TAG, "Sleeping interrupted", e);
+            }
+        }
     }
 
     private long getMillisecondsSinceTxLastSeen() {
@@ -1389,28 +1802,146 @@ public class G5CollectionService extends Service {
         return new Date().getTime() - timeInMillisecondsOfLastSuccessfulSensorRead;
     }
 
-    public boolean scanConstantly() {
+    private boolean scanConstantly() {
         SharedPreferences sharedPreferences =
                 PreferenceManager.getDefaultSharedPreferences(getApplicationContext());
         return sharedPreferences.getBoolean("run_ble_scan_constantly", false);
     }
 
-    public boolean alwaysUnbond() {
+    private boolean alwaysUnbond() {
         SharedPreferences sharedPreferences =
                 PreferenceManager.getDefaultSharedPreferences(getApplicationContext());
         return sharedPreferences.getBoolean("always_unbond_G5", false);
     }
 
-    public boolean alwaysAuthenticate() {
+    private boolean alwaysAuthenticate() {
         SharedPreferences sharedPreferences =
                 PreferenceManager.getDefaultSharedPreferences(getApplicationContext());
-        return sharedPreferences.getBoolean("always_get_new_keys", false);
+        return force_always_authenticate || sharedPreferences.getBoolean("always_get_new_keys", false);
     }
 
-    public boolean enforceMainThread() {
+    private boolean enforceMainThread() {
         SharedPreferences sharedPreferences =
                 PreferenceManager.getDefaultSharedPreferences(getApplicationContext());
         return sharedPreferences.getBoolean("run_G5_ble_tasks_on_uithread", false);
     }
 
+    // TODO this could be cached for performance
+    private boolean useG5NewMethod() {
+        return Home.getPreferencesBooleanDefaultFalse("g5_non_raw_method") && (Home.getPreferencesBooleanDefaultFalse("engineering_mode"));
+    }
+
+    private boolean engineeringMode() {
+        return Home.getPreferencesBooleanDefaultFalse("engineering_mode");
+    }
+
+    private boolean g5BluetoothWatchdog() {
+        return Home.getPreferencesBoolean("g5_bluetooth_watchdog", true);
+    }
+
+
+    private int getTokenSize() {
+            return 8; // d
+    }
+
+    private String settingsToString() {
+        return ((scanConstantly() ? "scanConstantly " : "")
+                + (alwaysUnbond() ? "alwaysUnbond " : "")
+                + (alwaysAuthenticate() ? "alwaysAuthenticate " : "")
+                + (enforceMainThread() ? "enforceMainThread " : "")
+                + (useG5NewMethod() ? "useG5NewMethod " : "")
+                + (ignoreLocalBondingState ? "ignoreLocalBondingState " : "")
+                + (delayOnBond ? "delayOnBond " : "")
+                + (delayOn133Errors ? "delayOn133Errors " : "")
+                + (tryOnDemandBondWithDelay ? "tryOnDemandBondWithDelay " : "")
+                + (engineeringMode() ? "engineeringMode " : "")
+                + (tryPreBondWithDelay ? "tryPreBondWithDelay " : ""));
+    }
+
+    // Status for Watchface
+    public static boolean isRunning() {
+        return lastState.equals("Not running") || lastState.equals("Stopped") ? false : true;
+    }
+
+    public static void setWatchStatus(DataMap dataMap) {
+        lastStateWatch = dataMap.getString("lastState", "");
+        static_last_timestamp_watch = dataMap.getLong("timestamp", 0);
+    }
+
+    public static DataMap getWatchStatus() {
+        DataMap dataMap = new DataMap();
+        dataMap.putString("lastState", lastState);
+        dataMap.putLong("timestamp", static_last_timestamp);
+        return dataMap;
+    }
+
+    // data for MegaStatus
+    public static List<StatusItem> megaStatus() {
+        final List<StatusItem> l = new ArrayList<>();
+
+        l.add(new StatusItem("Phone Service State", lastState));
+        if (static_last_timestamp > 0) {
+            l.add(new StatusItem("Phone got Glucose", JoH.niceTimeSince(static_last_timestamp) + " ago"));
+        }
+
+        if (Home.getPreferencesBooleanDefaultFalse("wear_sync") &&
+                Home.getPreferencesBooleanDefaultFalse("enable_wearG5")) {
+            l.add(new StatusItem("Watch Service State", lastStateWatch));
+            if (static_last_timestamp_watch > 0) {
+                l.add(new StatusItem("Watch got Glucose", JoH.niceTimeSince(static_last_timestamp_watch) + " ago"));
+            }
+        }
+
+        final String tx_id = Home.getPreferencesStringDefaultBlank("dex_txid");
+
+        l.add(new StatusItem("Transmitter ID", tx_id));
+        // get firmware details
+        VersionRequestRxMessage vr = getFirmwareDetails(tx_id);
+        if ((vr != null) && (vr.firmware_version_string.length() > 0)) {
+
+            l.add(new StatusItem("Firmware Version", vr.firmware_version_string));
+            l.add(new StatusItem("Bluetooth Version", vr.bluetooth_firmware_version_string));
+            l.add(new StatusItem("Other Version", vr.other_firmware_version));
+            l.add(new StatusItem("Hardware Version", vr.hardwarev));
+           if (vr.asic != 61440) l.add(new StatusItem("ASIC", vr.asic, StatusItem.Highlight.NOTICE)); // TODO color code
+        }
+
+        BatteryInfoRxMessage bt = getBatteryDetails(tx_id);
+        long last_battery_query = PersistentStore.getLong(G5_BATTERY_FROM_MARKER + tx_id);
+        if (getBatteryStatusNow) {
+            l.add(new StatusItem("Battery Status Request Queued", "Will attempt to read battery status on next sensor reading", StatusItem.Highlight.NOTICE, "long-press",
+                    new Runnable() {
+                        @Override
+                        public void run() {
+                            getBatteryStatusNow = false;
+                        }
+                    }));
+        }
+        if ((bt != null) && (last_battery_query > 0)) {
+            l.add(new StatusItem("Battery Last queried", JoH.niceTimeSince(last_battery_query) + " " + "ago", StatusItem.Highlight.NORMAL, "long-press",
+                    new Runnable() {
+                        @Override
+                        public void run() {
+                            getBatteryStatusNow = true;
+                        }
+                    }));
+            l.add(new StatusItem("Transmitter Status", TransmitterStatus.getBatteryLevel(vr.status).toString()));
+            l.add(new StatusItem("Transmitter Days", bt.runtime + ((last_transmitter_timestamp > 0) ? " / " + JoH.qs((double) last_transmitter_timestamp / 86400, 1) : "")));
+            l.add(new StatusItem("Voltage A", bt.voltagea, bt.voltagea < 300 ? StatusItem.Highlight.BAD : StatusItem.Highlight.NORMAL));
+            l.add(new StatusItem("Voltage B", bt.voltageb, bt.voltageb < 290 ? StatusItem.Highlight.BAD : StatusItem.Highlight.NORMAL));
+            l.add(new StatusItem("Resistance", bt.resist, bt.resist > 1400 ? StatusItem.Highlight.BAD : (bt.resist > 1000 ? StatusItem.Highlight.NOTICE : (bt.resist > 750 ? StatusItem.Highlight.NORMAL : StatusItem.Highlight.GOOD))));
+            l.add(new StatusItem("Temperature", bt.temperature + " \u2103"));
+        }
+
+
+        return l;
+    }
+
+    // Status for Watchface
+    public static String getLastState() {
+        return lastState;
+    }
+    public static long getLastStateTimestamp() {
+        return static_last_timestamp;
+    }
 }

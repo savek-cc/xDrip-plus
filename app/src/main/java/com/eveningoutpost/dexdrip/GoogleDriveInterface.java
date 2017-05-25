@@ -4,103 +4,94 @@ package com.eveningoutpost.dexdrip;
  * Created by jamorham on 08/01/16.
  */
 
-import android.app.Activity;
-import android.content.Intent;
-import android.content.IntentSender.SendIntentException;
 import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
 import android.util.Log;
-import android.widget.Toast;
 
-import com.eveningoutpost.dexdrip.Models.Treatments;
-import com.eveningoutpost.dexdrip.Services.PlusSyncService;
+import com.eveningoutpost.dexdrip.Models.UserError;
 import com.eveningoutpost.dexdrip.utils.CipherUtils;
-import com.google.android.gms.common.ConnectionResult;
-import com.google.android.gms.common.GoogleApiAvailability;
 import com.google.android.gms.common.api.GoogleApiClient;
-import com.google.android.gms.common.api.GoogleApiClient.ConnectionCallbacks;
-import com.google.android.gms.common.api.GoogleApiClient.OnConnectionFailedListener;
-import com.google.android.gms.common.api.ResultCallback;
-import com.google.android.gms.common.api.Status;
-import com.google.android.gms.drive.Drive;
-import com.google.android.gms.drive.DriveApi.DriveContentsResult;
-import com.google.android.gms.drive.DriveApi.MetadataBufferResult;
-import com.google.android.gms.drive.DriveContents;
-import com.google.android.gms.drive.DriveFile;
-import com.google.android.gms.drive.DriveFolder;
-import com.google.android.gms.drive.DriveId;
-import com.google.android.gms.drive.DriveResource;
-import com.google.android.gms.drive.ExecutionOptions;
-import com.google.android.gms.drive.Metadata;
-import com.google.android.gms.drive.MetadataBuffer;
-import com.google.android.gms.drive.MetadataChangeSet;
-import com.google.android.gms.drive.events.ChangeEvent;
-import com.google.android.gms.drive.events.ChangeListener;
-import com.google.android.gms.drive.query.Filters;
-import com.google.android.gms.drive.query.Query;
-import com.google.android.gms.drive.query.SearchableField;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.nio.charset.Charset;
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.List;
+//import com.google.android.gms.drive.Drive;
+//import com.google.android.gms.drive.DriveApi.DriveContentsResult;
+//import com.google.android.gms.drive.DriveApi.MetadataBufferResult;
+//import com.google.android.gms.drive.DriveContents;
+//import com.google.android.gms.drive.DriveFile;
+//import com.google.android.gms.drive.DriveFolder;
+//import com.google.android.gms.drive.DriveId;
+//import com.google.android.gms.drive.DriveResource;
+//import com.google.android.gms.drive.ExecutionOptions;
+//import com.google.android.gms.drive.Metadata;
+//import com.google.android.gms.drive.MetadataBuffer;
+//import com.google.android.gms.drive.MetadataChangeSet;
+//import com.google.android.gms.drive.events.ChangeEvent;
+//import com.google.android.gms.drive.events.ChangeListener;
+//import com.google.android.gms.drive.query.Filters;
+//import com.google.android.gms.drive.query.Query;
+//import com.google.android.gms.drive.query.SearchableField;
 
 
-public class GoogleDriveInterface extends Activity implements ConnectionCallbacks,
-        OnConnectionFailedListener {
+//public class GoogleDriveInterface extends Activity implements ConnectionCallbacks,
+//        OnConnectionFailedListener {
+public class GoogleDriveInterface extends FauxActivity {
 
-    public static final Charset my_charset = Charset.forName("ISO-8859-1");
+
     private static final String TAG = "jamorham drive";
-    private static final int REQUEST_CODE_CREATOR = 2;
-    private static final int REQUEST_CODE_RESOLUTION = 3;
-    public static boolean staticGetFolderFileList = false;
+
     public static boolean isRunning = false;
     private static GoogleApiClient mGoogleApiClient;
-    private static DriveId ourFolderID = null;
+    //   private static DriveId ourFolderID = null;
     private static String ourFolderResourceID = null;
     private static String ourFolderResourceIDHash = null;
     private static String ourFolderResourceKeyHash = null;
     private static SharedPreferences prefs;
-    private final String my_folder_name = "jamorham-xDrip+sync";
-    private final boolean use_app_folder = true;
-    private final double max_sync_file_age = 1000 * 60 * 60 * 24;
-    final private ResultCallback<DriveFolder.DriveFileResult> fileCallback = new
-            ResultCallback<DriveFolder.DriveFileResult>() {
-                @Override
-                public void onResult(DriveFolder.DriveFileResult result) {
-                    if (!result.getStatus().isSuccess()) {
-                        showMessage("Error while trying to create the file");
-                        return;
-                    }
-                    Log.d(TAG, "Created a file in App Folder: "
-                            + result.getDriveFile().getDriveId());
-                }
-            };
-    final private ResultCallback<DriveResource.MetadataResult> metadataRetrievedCallback = new
-            ResultCallback<DriveResource.MetadataResult>() {
-                @Override
-                public void onResult(DriveResource.MetadataResult result) {
-                    if (!result.getStatus().isSuccess()) {
-                        Log.v(TAG, "Problem while trying to fetch metadata.");
-                        return;
-                    }
 
-                    Metadata metadata = result.getMetadata();
-                    if (metadata.isTrashed()) {
-                        Log.v(TAG, "Folder is trashed");
-                    } else {
-                        Log.v(TAG, "Folder is not trashed");
-                    }
+    /*
+    private static final int REQUEST_CODE_CREATOR = 2;
+    private static final int REQUEST_CODE_RESOLUTION = 3;
+    public static boolean staticGetFolderFileList = false;
+    public static final Charset my_charset = Charset.forName("ISO-8859-1");
 
-                }
-            };
-    /**
-     * Callback when call to trash or untrash is complete.
-     */
+   private final String my_folder_name = "jamorham-xDrip+sync";
+   private final boolean use_app_folder = true;
+   private final double max_sync_file_age = 1000 * 60 * 60 * 24;
+
+
+      final private ResultCallback<DriveFolder.DriveFileResult> fileCallback = new
+              ResultCallback<DriveFolder.DriveFileResult>() {
+                  @Override
+                  public void onResult(DriveFolder.DriveFileResult result) {
+                      if (!result.getStatus().isSuccess()) {
+                          showMessage("Error while trying to create the file");
+                          return;
+                      }
+                      Log.d(TAG, "Created a file in App Folder: "
+                              + result.getDriveFile().getDriveId());
+                  }
+              };
+      final private ResultCallback<DriveResource.MetadataResult> metadataRetrievedCallback = new
+              ResultCallback<DriveResource.MetadataResult>() {
+                  @Override
+                  public void onResult(DriveResource.MetadataResult result) {
+                      if (!result.getStatus().isSuccess()) {
+                          Log.v(TAG, "Problem while trying to fetch metadata.");
+                          return;
+                      }
+
+                      Metadata metadata = result.getMetadata();
+                      if (metadata.isTrashed()) {
+                          Log.v(TAG, "Folder is trashed");
+                      } else {
+                          Log.v(TAG, "Folder is not trashed");
+                      }
+
+                  }
+              };
+      /**
+       * Callback when call to trash or untrash is complete.
+       */
+    /*
     private final ResultCallback<Status> trashStatusCallback =
             new ResultCallback<Status>() {
                 @Override
@@ -117,6 +108,7 @@ public class GoogleDriveInterface extends Activity implements ConnectionCallback
     /**
      * A listener to handle file change events.
      */
+    /*
     final private ChangeListener changeListener = new ChangeListener() {
         @Override
         public void onChange(ChangeEvent event) {
@@ -276,7 +268,7 @@ public class GoogleDriveInterface extends Activity implements ConnectionCallback
             }
         }
     };
-
+*/
     public static boolean keyInitialized() {
         if (getDriveIdentityString() != null) return true;
         return false;
@@ -286,11 +278,12 @@ public class GoogleDriveInterface extends Activity implements ConnectionCallback
         if ((prefs == null) && (xdrip.getAppContext() != null)) {
             prefs = PreferenceManager.getDefaultSharedPreferences(xdrip.getAppContext());
         }
-        if ((prefs != null) && (prefs.getBoolean("use_custom_sync_key", true))) {
+        //if ((prefs != null) && (prefs.getBoolean("use_custom_sync_key", true))) {
+        if ((prefs != null) && (true)) {
             if (prefs.getString("custom_sync_key", "").equals("")) {
                 prefs.edit().putString("custom_sync_key", CipherUtils.getRandomHexKey()).commit();
             }
-            String mykey = prefs.getString("custom_sync_key", "");
+            final String mykey = prefs.getString("custom_sync_key", "");
             if ((mykey.length() > 16)) {
                 return mykey;
             } else {
@@ -301,7 +294,7 @@ public class GoogleDriveInterface extends Activity implements ConnectionCallback
     }
 
     public static void invalidate() {
-        ourFolderID = null;
+        // ourFolderID = null;
         ourFolderResourceID = null;
         ourFolderResourceIDHash = null;
         ourFolderResourceKeyHash = null;
@@ -316,9 +309,9 @@ public class GoogleDriveInterface extends Activity implements ConnectionCallback
             return ourFolderResourceIDHash;
         }
 
-        if (ourFolderID == null) {
-            return null;
-        }
+        //   if (ourFolderID == null) {
+        //      return null;
+        //  }
         if (ourFolderResourceID == null) {
             return null;
         }
@@ -332,17 +325,18 @@ public class GoogleDriveInterface extends Activity implements ConnectionCallback
     public static String getDriveKeyString() {
 
         // we should cache and detect preference change and invalidate a flag for optimization
-        String customkey = getCustomSyncKey();
+        final String customkey = getCustomSyncKey();
         if (customkey != null) {
             ourFolderResourceKeyHash = CipherUtils.getMD5(customkey);
             return ourFolderResourceKeyHash;
         }
 
-        if (ourFolderID == null) {
-            return "";
-        }
+        //  if (ourFolderID == null) {
+        //      return "";
+        //  }
         if (ourFolderResourceID == null) {
-            return "";
+            UserError.Log.wtf(TAG, "Invalid null sync key!!!");
+            return CipherUtils.getRandomHexKey();
         }
         if (ourFolderResourceKeyHash == null) {
             Log.d(TAG, "Using Key ResourceID String: " + ourFolderResourceID);
@@ -354,14 +348,14 @@ public class GoogleDriveInterface extends Activity implements ConnectionCallback
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
-        prefs = PreferenceManager.getDefaultSharedPreferences(getApplicationContext());
+        prefs = PreferenceManager.getDefaultSharedPreferences(xdrip.getAppContext());
         startup();
     }
 
     /**
      * Create a new file and save it
      */
-    private void saveFileToDrive(final String filename, final byte[] source) {
+  /*  private void saveFileToDrive(final String filename, final byte[] source) {
 
         Log.i(TAG, "Creating new contents.");
 
@@ -411,19 +405,19 @@ public class GoogleDriveInterface extends Activity implements ConnectionCallback
 
 
                 });
-    }
-
-    void startup() {
+    }*/
+    private void startup() {
         isRunning = true;
-        if (!prefs.getBoolean("use_custom_sync_key", true)) {
-            connectGoogleAPI();
+        // if (!prefs.getBoolean("use_custom_sync_key", true)) {
+        if (false) {
+            //      connectGoogleAPI();
         } else {
             Log.d(TAG, "Using custom sync key");
             shutdown();
         }
     }
 
-    void shutdown() {
+    private void shutdown() {
         if (mGoogleApiClient != null) {
             mGoogleApiClient.disconnect();
             Log.i(TAG, "DISCONNECTED GOOGLE DRIVE API");
@@ -438,7 +432,7 @@ public class GoogleDriveInterface extends Activity implements ConnectionCallback
             Log.e(TAG, "Got exception doing finish in shutdown");
         }
     }
-
+/*
     @Override
     protected void onResume() {
         super.onResume();
@@ -678,6 +672,7 @@ public class GoogleDriveInterface extends Activity implements ConnectionCallback
         }
         mGoogleApiClient.connect();
     }
+*/
 }
 
 

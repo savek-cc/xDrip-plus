@@ -10,6 +10,7 @@ import android.widget.RatingBar;
 import android.widget.Toast;
 
 import com.eveningoutpost.dexdrip.Home;
+import com.eveningoutpost.dexdrip.Models.JoH;
 import com.eveningoutpost.dexdrip.R;
 import com.squareup.okhttp.FormEncodingBuilder;
 import com.squareup.okhttp.Interceptor;
@@ -84,7 +85,7 @@ public class SendFeedBack extends AppCompatActivity {
         try {
             final RequestBody formBody = new FormEncodingBuilder()
                     .add("contact", contact.getText().toString())
-                    .add("body", yourtext.getText().toString())
+                    .add("body", JoH.getDeviceDetails()+"\n"+JoH.getVersionDetails()+"\n\n"+yourtext.getText().toString())
                     .add("rating", String.valueOf(myrating.getRating()))
                     .build();
             new Thread(new Runnable() {
@@ -97,19 +98,20 @@ public class SendFeedBack extends AppCompatActivity {
                         Log.i(TAG, "Sending feedback request");
                         Response response = client.newCall(request).execute();
                         if (response.isSuccessful()) {
-                            Home.toaststatic("Feedback sent successfully");
+                            JoH.static_toast_long(response.body().string());
+                            //Home.toaststatic("Feedback sent successfully");
                             finish();
                         } else {
-                            toast("Error sending feedback: " + response.message().toString());
+                            JoH.static_toast_short("Error sending feedback: " + response.message().toString());
                         }
                     } catch (Exception e) {
                         Log.e(TAG, "Got exception in execute: " + e.toString());
-                       toast("Error with network connection");
+                       JoH.static_toast_short("Error with network connection");
                     }
                 }
             }).start();
         } catch (Exception e) {
-            toast(e.getMessage());
+            JoH.static_toast_short(e.getMessage());
             Log.e(TAG, "General exception: " + e.toString());
         }
     }

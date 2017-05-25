@@ -17,6 +17,7 @@
 #}
 
 -dontwarn retrofit.**
+-dontwarn retrofit2.**
 -keep class retrofit.** { *; }
 -keepattributes Signature
 -keepattributes Exceptions
@@ -41,17 +42,20 @@
 -dontwarn obj.objenesis.instantiator.sun.UnsafeFactoryInstantiator
 -dontwarn sun.misc.Unsafe
 -dontwarn ar.com.hjg.pngj.**
+-dontwarn okhttp3.**
+-dontwarn org.influxdb.**
 
 -keep class com.nightscout.** { *; }
 -keep class com.squareup.** { *; }
 -keep class net.tribe7.** { *; }
--keep class com.mongodb.** { *; }
--keep class com.google.common.** { *; }
+#-keep class com.mongodb.** { *; }
+#-keep class com.google.common.** { *; }
 -keep class okay.** { *; }
 -keep class org.bson.** { *; }
 -keep class org.slf4j.** { *; }
 -keep class rx.internal.util.** { *; }
 -keep class sun.misc.Unsafe { *; }
 -keep class com.eveningoutpost.dexdrip.Models.** { *; }
+-keep class com.eveningoutpost.dexdrip.ImportedLibraries.usbserial.** { *; }
 -keep class ar.com.hjg.pngj.** { *; }
 -keep class android.support.v7.widget.SearchView { *; }

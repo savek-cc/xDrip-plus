@@ -1,6 +1,6 @@
 package com.eveningoutpost.dexdrip;
 
-import android.app.NotificationManager;
+//import android.app.NotificationManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -14,42 +14,58 @@ import android.graphics.Paint;
 import android.graphics.Point;
 import android.graphics.Rect;
 import android.graphics.Shader;
+import android.os.Bundle;
 import android.os.PowerManager;
 import android.preference.PreferenceManager;
-import android.support.v4.app.NotificationCompat;
+//import android.support.v4.app.NotificationCompat;
+import android.support.v4.content.ContextCompat;
 import android.support.v4.content.LocalBroadcastManager;
 import android.support.wearable.view.WatchViewStub;
+import android.support.wearable.watchface.WatchFaceStyle;
 import android.text.format.DateFormat;
 import android.util.Log;
 import android.view.Display;
+import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.widget.Button;
+import android.widget.LinearLayout;
 import android.widget.RelativeLayout;
 import android.widget.TextView;
 
+import com.eveningoutpost.dexdrip.Models.JoH;
 import com.google.android.gms.wearable.DataMap;
-import com.ustwo.clockwise.WatchFace;
-import com.ustwo.clockwise.WatchFaceTime;
-import com.ustwo.clockwise.WatchMode;
-import com.ustwo.clockwise.WatchShape;
+import com.ustwo.clockwise.wearable.WatchFace;
+import com.ustwo.clockwise.common.WatchFaceTime;
+import com.ustwo.clockwise.common.WatchMode;
+import com.ustwo.clockwise.common.WatchShape;
 
+import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.Date;
 
-import lecho.lib.hellocharts.util.Utils;
+import lecho.lib.hellocharts.util.ChartUtils;
 import lecho.lib.hellocharts.view.LineChartView;
 
 /**
- * Created by stephenblack on 12/29/14.
+ * Created by Emma Black on 12/29/14.
  */
 public class BIGChart extends WatchFace implements SharedPreferences.OnSharedPreferenceChangeListener {
+    private final static String TAG = BIGChart.class.getSimpleName();
     public final static IntentFilter INTENT_FILTER;
     public static final long[] vibratePattern = {0,400,300,400,300,400};
     public TextView mTime, mSgv, mTimestamp, mDelta;
     public RelativeLayout mRelativeLayout;
     //public LinearLayout mLinearLayout;
+    public Button stepsButton;
+    public LinearLayout mDirectionDelta;
+    public LinearLayout mStepsLinearLayout;
+    public String mExtraStatusLine = "";
+    public String mStepsToast = "";
+    public int mStepsCount = 0;
+    public long mTimeStepsRcvd = 0;
     public long sgvLevel = 0;
     public int batteryLevel = 1;
     public int ageLevel = 1;
@@ -57,7 +73,7 @@ public class BIGChart extends WatchFace implements SharedPreferences.OnSharedPre
     public int lowColor = Color.RED;
     public int midColor = Color.WHITE;
     public int pointSize = 2;
-    public boolean singleLine = false;
+    public boolean lowResMode = false;
     public boolean layoutSet = false;
     public int missed_readings_alert_id = 818;
     public BgGraphBuilder bgGraphBuilder;
@@ -79,6 +95,10 @@ public class BIGChart extends WatchFace implements SharedPreferences.OnSharedPre
     private String rawString = "000 | 000 | 000";
     private String batteryString = "--";
     private String sgvString = "--";
+    private String externalStatusString = "no status";
+    private TextView statusView;
+    private long chartTapTime = 0l;
+    private Rect mCardRect = new Rect(0,0,0,0);
 
     @Override
     public void onCreate() {
@@ -123,8 +143,12 @@ public class BIGChart extends WatchFace implements SharedPreferences.OnSharedPre
                 mDelta = (TextView) stub.findViewById(R.id.delta);
                 mRelativeLayout = (RelativeLayout) stub.findViewById(R.id.main_layout);
                 chart = (LineChartView) stub.findViewById(R.id.chart);
+                statusView = (TextView) stub.findViewById(R.id.aps_status);
+                stepsButton=(Button)stub.findViewById(R.id.walkButton);
+                mStepsLinearLayout = (LinearLayout) stub.findViewById(R.id.steps_layout);
+                mDirectionDelta = (LinearLayout) stub.findViewById(R.id.directiondelta_layout);
                 layoutSet = true;
-                showAgoRawBatt();
+                showAgeAndStatus();
                 mRelativeLayout.measure(specW, specH);
                 mRelativeLayout.layout(0, 0, mRelativeLayout.getMeasuredWidth(),
                         mRelativeLayout.getMeasuredHeight());
@@ -132,6 +156,72 @@ public class BIGChart extends WatchFace implements SharedPreferences.OnSharedPre
         });
         ListenerService.requestData(this);
         wakeLock.acquire(50);
+    }
+
+    @Override
+    protected void onTapCommand(int tapType, int x, int y, long eventTime) {
+
+        if (tapType == TAP_TYPE_TAP&&
+                x >=chart.getLeft() &&
+                x <= chart.getRight()&&
+                y >= chart.getTop() &&
+                y <= chart.getBottom()){
+            if (eventTime - chartTapTime < 800){
+                changeChartTimeframe();
+            }
+            chartTapTime = eventTime;
+        }
+        if (tapType == TAP_TYPE_TOUCH && linearLayout(mStepsLinearLayout, x, y)) {
+            if (sharedPrefs.getBoolean("showSteps", false) && mStepsCount > 0) {
+                JoH.static_toast_long(mStepsToast);
+            }
+        }
+        if (tapType == TAP_TYPE_TOUCH && linearLayout(mDirectionDelta, x, y)) {
+            if (sharedPrefs.getBoolean("extra_status_line", false) && mExtraStatusLine != null && !mExtraStatusLine.isEmpty()) {
+                JoH.static_toast_long(mExtraStatusLine);
+            }
+        }
+    }
+
+    private boolean linearLayout(LinearLayout layout,int x, int y) {
+        if (x >=layout.getLeft() && x <= layout.getRight()&&
+                y >= layout.getTop() && y <= layout.getBottom()) {
+            return true;
+        }
+        return false;
+    }
+
+    private void changeChartTimeframe() {
+        int timeframe = Integer.parseInt(sharedPrefs.getString("chart_timeframe", "3"));
+        timeframe = (timeframe%5) + 1;
+        sharedPrefs.edit().putString("chart_timeframe", "" + timeframe).commit();
+    }
+
+    protected void onWatchModeChanged(WatchMode watchMode) {
+
+        if(lowResMode ^ isLowRes(watchMode)){ //if there was a change in lowResMode
+            lowResMode = isLowRes(watchMode);
+            setColor();
+        } else if (! sharedPrefs.getBoolean("dark", true)){
+            //in bright mode: different colours if active:
+            setColor();
+        }
+    }
+
+    private boolean isLowRes(WatchMode watchMode) {
+        return (watchMode == WatchMode.LOW_BIT) || (watchMode == WatchMode.LOW_BIT_BURN_IN) || (watchMode == WatchMode.LOW_BIT_BURN_IN);
+    }
+
+
+    @Override
+    protected WatchFaceStyle getWatchFaceStyle(){
+        return new WatchFaceStyle.Builder(this)
+                .setAcceptsTapEvents(true)
+                //.setHotwordIndicatorGravity(Gravity.CENTER_HORIZONTAL | -20)//positions it at end
+                //.setHotwordIndicatorGravity(Gravity.CENTER | -20)//positions it at end
+                .setHotwordIndicatorGravity(Gravity.START | -20)//positions it left, covers step icon
+                .setStatusBarGravity(Gravity.END | -20)
+                .build();
     }
 
     public int ageLevel() {
@@ -176,36 +266,68 @@ public class BIGChart extends WatchFace implements SharedPreferences.OnSharedPre
     protected void onDraw(Canvas canvas) {
         if(layoutSet) {
             this.mRelativeLayout.draw(canvas);
-            Log.d("onDraw", "draw");
+            Log.d(TAG, "onDraw");
+            if (sharedPrefs.getBoolean("showOpaqueCard", true)) {
+                int cardWidth = mCardRect.width();
+                int cardHeight = mCardRect.height();
+                if (cardHeight > 0 && cardWidth > 0 && getCurrentWatchMode() != WatchMode.INTERACTIVE) {
+                    Paint paint = new Paint();
+                    paint.setColor(Color.BLACK);
+                    paint.setStrokeWidth(0);
+                    canvas.drawRect(mCardRect, paint);
+                }
+            }
         }
     }
 
     @Override
     protected void onTimeChanged(WatchFaceTime oldTime, WatchFaceTime newTime) {
-        if (layoutSet && (newTime.hasHourChanged(oldTime) || newTime.hasMinuteChanged(oldTime))) {
-            wakeLock.acquire(50);
-            final java.text.DateFormat timeFormat = DateFormat.getTimeFormat(BIGChart.this);
-            mTime.setText(timeFormat.format(System.currentTimeMillis()));
-            showAgoRawBatt();
+        if (newTime.hasHourChanged(oldTime) || newTime.hasMinuteChanged(oldTime)) {
+            if (layoutSet) {
+                wakeLock.acquire(50);
+                final java.text.DateFormat timeFormat = DateFormat.getTimeFormat(BIGChart.this);
+                mTime.setText(timeFormat.format(System.currentTimeMillis()));
+                showAgeAndStatus();
 
-            if(ageLevel()<=0) {
-                mSgv.setPaintFlags(mSgv.getPaintFlags() | Paint.STRIKE_THRU_TEXT_FLAG);
-            } else {
-                mSgv.setPaintFlags(mSgv.getPaintFlags() & ~Paint.STRIKE_THRU_TEXT_FLAG);
+                if (ageLevel() <= 0) {
+                    mSgv.setPaintFlags(mSgv.getPaintFlags() | Paint.STRIKE_THRU_TEXT_FLAG);
+                } else {
+                    mSgv.setPaintFlags(mSgv.getPaintFlags() & ~Paint.STRIKE_THRU_TEXT_FLAG);
+                }
+
+                missedReadingAlert();
+                mRelativeLayout.measure(specW, specH);
+                mRelativeLayout.layout(0, 0, mRelativeLayout.getMeasuredWidth(),
+                        mRelativeLayout.getMeasuredHeight());
             }
-
-            missedReadingAlert();
-            mRelativeLayout.measure(specW, specH);
-            mRelativeLayout.layout(0, 0, mRelativeLayout.getMeasuredWidth(),
-                    mRelativeLayout.getMeasuredHeight());
+            else {
+                missedReadingAlert();//KS TEST otherwise, it can be 10+ minutes before missedReadingAlert is called; hwr, aggressive restart does not always resolve ble connection
+            }
         }
     }
 
     public class MessageReceiver extends BroadcastReceiver {
         @Override
         public void onReceive(Context context, Intent intent) {
-            DataMap dataMap = DataMap.fromBundle(intent.getBundleExtra("data"));
-            if (layoutSet) {
+            DataMap dataMap;
+            Bundle bundle = intent.getBundleExtra("msg");
+            if (layoutSet && bundle != null) {
+                dataMap = DataMap.fromBundle(bundle);
+                String msg = dataMap.getString("msg", "");
+                int length = dataMap.getInt("length", 0);
+                JoH.static_toast(xdrip.getAppContext(), msg, length);
+            }
+            bundle = intent.getBundleExtra("steps");
+            if (layoutSet && bundle != null) {
+                dataMap = DataMap.fromBundle(bundle);
+                if (mTimeStepsRcvd <= dataMap.getLong("steps_timestamp", 0)) {
+                    mStepsCount = dataMap.getInt("steps", 0);
+                    mTimeStepsRcvd = dataMap.getLong("steps_timestamp", 0);
+                }
+            }
+            bundle = intent.getBundleExtra("data");
+            if (layoutSet && bundle != null) {
+                dataMap = DataMap.fromBundle(bundle);
                 wakeLock.acquire(50);
                 sgvLevel = dataMap.getLong("sgvLevel");
                 batteryLevel = dataMap.getInt("batteryLevel");
@@ -224,7 +346,7 @@ public class BIGChart extends WatchFace implements SharedPreferences.OnSharedPre
                 final java.text.DateFormat timeFormat = DateFormat.getTimeFormat(BIGChart.this);
                 mTime.setText(timeFormat.format(System.currentTimeMillis()));
 
-                showAgoRawBatt();
+                showAgeAndStatus();
 
                 String delta = dataMap.getString("delta");
                 if (delta.endsWith(" mg/dl")) {
@@ -232,6 +354,7 @@ public class BIGChart extends WatchFace implements SharedPreferences.OnSharedPre
                 } else if (delta.endsWith(" mmol/l")) {
                     mDelta.setText(delta.substring(0, delta.length() - 7));
                 }
+                mExtraStatusLine = dataMap.getString("extra_status_line");
 
                 if (chart != null) {
                     addToWatchSet(dataMap);
@@ -245,27 +368,80 @@ public class BIGChart extends WatchFace implements SharedPreferences.OnSharedPre
 
                 //start animation?
                 // dataMap.getDataMapArrayList("entries") == null -> not on "resend data".
-                if (sharedPrefs.getBoolean("animation", false) && dataMap.getDataMapArrayList("entries") == null && (sgvString.equals("100") || sgvString.equals("5.5") || sgvString.equals("5,5"))) {
+                if (!lowResMode && (sharedPrefs.getBoolean("animation", false) && dataMap.getDataMapArrayList("entries") == null && (sgvString.equals("100") || sgvString.equals("5.5") || sgvString.equals("5,5")))) {
                     startAnimation();
                 }
 
 
             } else {
-                Log.d("ERROR: ", "DATA IS NOT YET SET");
+                Log.d(TAG, "ERROR: DATA IS NOT YET SET");
+            }
+            //status
+            bundle = intent.getBundleExtra("status");
+            if (layoutSet && bundle != null) {
+                dataMap = DataMap.fromBundle(bundle);
+                wakeLock.acquire(50);
+                externalStatusString = dataMap.getString("externalStatusString");
+
+                showAgeAndStatus();
+
+                mRelativeLayout.measure(specW, specH);
+                mRelativeLayout.layout(0, 0, mRelativeLayout.getMeasuredWidth(),
+                        mRelativeLayout.getMeasuredHeight());
+                invalidate();
+                setColor();
             }
         }
     }
 
-    private void showAgoRawBatt() {
 
-        if( mTimestamp == null){
-            return;
+    private void showAgeAndStatus() {
+
+        if( mTimestamp != null){
+            mTimestamp.setText(readingAge(true));
         }
-        mTimestamp.setText(readingAge(true));
+
+        boolean showStatus = sharedPrefs.getBoolean("showExternalStatus", true);
+
+        if(showStatus){
+            statusView.setText(externalStatusString);
+            statusView.setVisibility(View.VISIBLE);
+        } else {
+            statusView.setVisibility(View.GONE);
+        }
+
+        if (sharedPrefs.getBoolean("showSteps", false)) {
+            stepsButton.setText(String.format("%d", mStepsCount));
+            stepsButton.setVisibility(View.VISIBLE);
+
+            if (mStepsCount > 0) {
+                DecimalFormat df = new DecimalFormat("#.##");
+                Double km = (((double)mStepsCount) / 2000.0d) * 1.6d;
+                Double mi = (((double)mStepsCount)/ 2000.0d) * 1.0d;
+                Log.d(TAG, "showAgoRawBattStatus Sensor mStepsCount=" + mStepsCount+ " km=" + km + " mi=" + mi);
+                mStepsToast = getResources().getString(R.string.label_show_steps, mStepsCount) +
+                        (km > 0.0 ? "\n" + getResources().getString(R.string.label_show_steps_km, df.format(km)) : "0") +
+                        (mi > 0.0 ? "\n" + getResources().getString(R.string.label_show_steps_mi, df.format(mi)) : "0") +
+                        "\n" + getResources().getString(R.string.label_show_steps_rcvdtime, JoH.dateTimeText(mTimeStepsRcvd));
+            }
+            else {
+                mStepsToast = getResources().getString(R.string.label_show_steps, mStepsCount) +
+                        ("\n" + getResources().getString(R.string.label_show_steps_km, "0")) +
+                        ("\n" + getResources().getString(R.string.label_show_steps_mi, "0")) +
+                        "\n" + getResources().getString(R.string.label_show_steps_rcvdtime, JoH.dateTimeText(mTimeStepsRcvd));
+            }
+        }
+        else {
+            stepsButton.setVisibility(View.GONE);
+            mStepsToast = "";
+            Log.d(TAG, "Sensor showSteps GONE mStepsCount = " + getResources().getString(R.string.label_show_steps, mStepsCount));
+        }
     }
 
     public void setColor() {
-        if (sharedPrefs.getBoolean("dark", false)) {
+        if(lowResMode){
+            setColorLowRes();
+        } else if (sharedPrefs.getBoolean("dark", true)) {
             setColorDark();
         } else {
             setColorBright();
@@ -279,7 +455,7 @@ public class BIGChart extends WatchFace implements SharedPreferences.OnSharedPre
     public void onSharedPreferenceChanged(SharedPreferences sharedPreferences, String key){
         setColor();
         if(layoutSet){
-            showAgoRawBatt();
+            showAgeAndStatus();
             mRelativeLayout.measure(specW, specH);
             mRelativeLayout.layout(0, 0, mRelativeLayout.getMeasuredWidth(),
                     mRelativeLayout.getMeasuredHeight());
@@ -310,7 +486,7 @@ public class BIGChart extends WatchFace implements SharedPreferences.OnSharedPre
     }
 
     void startAnimation() {
-        Log.d("CircleWatchface", "start startAnimation");
+        Log.d(TAG, "CircleWatchface start startAnimation");
 
         Thread animator = new Thread() {
 
@@ -338,36 +514,88 @@ public class BIGChart extends WatchFace implements SharedPreferences.OnSharedPre
         animator.start();
     }
 
+    private void resetRelativeLayout() {
+        mRelativeLayout.measure(specW, specH);
+        mRelativeLayout.layout(0, 0, mRelativeLayout.getMeasuredWidth(),
+                mRelativeLayout.getMeasuredHeight());
+        Log.d(TAG, "resetRelativeLayout specW=" + specW + " specH=" + specH + " mRelativeLayout.getMeasuredWidth()=" + mRelativeLayout.getMeasuredWidth() + " mRelativeLayout.getMeasuredHeight()=" + mRelativeLayout.getMeasuredHeight());
+    }
+
+    private void displayCard() {
+        int cardWidth = mCardRect.width();
+        int cardHeight = mCardRect.height();
+        Log.d(TAG, "displayCard WatchFace.onCardPeek: getWidth()=" + getWidth() + " getHeight()=" + getHeight() + " cardWidth=" + cardWidth + " cardHeight=" + cardHeight);
+
+        if (cardHeight > 0 && cardWidth > 0) {
+            if (getCurrentWatchMode() != WatchMode.INTERACTIVE) {
+                // get height of visible area (not including card)
+                int visibleWidth = getWidth() - cardWidth;
+                int visibleHeight = getHeight() - cardHeight;
+                Log.d(TAG, "onCardPeek WatchFace.onCardPeek: visibleWidth=" + visibleWidth + " visibleHeight=" + visibleHeight);
+                mRelativeLayout.layout(0, 0, visibleWidth, visibleHeight);
+            }
+            else
+                resetRelativeLayout();
+        }
+        else
+            resetRelativeLayout();
+        invalidate();
+    }
+
+    @Override
+    protected void onCardPeek(Rect peekCardRect) {
+        if (sharedPrefs.getBoolean("showOpaqueCard", true)) {
+            mCardRect = peekCardRect;
+            displayCard();
+            int cardWidth = peekCardRect.width();
+            int cardHeight = peekCardRect.height();
+            Log.d(TAG, "onCardPeek WatchFace.onCardPeek: getWidth()=" + getWidth() + " getHeight()=" + getHeight() + " cardWidth=" + cardWidth + " cardHeight=" + cardHeight);
+        }
+    }
+
+
+    protected void setColorLowRes() {
+        mTime.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_mTime));
+        statusView.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_statusView));
+        mRelativeLayout.setBackgroundColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_background));
+        mSgv.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_midColor));
+        mDelta.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_midColor));
+        mTimestamp.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_Timestamp));
+        if (chart != null) {
+            highColor = ContextCompat.getColor(getApplicationContext(), R.color.dark_midColor);
+            lowColor = ContextCompat.getColor(getApplicationContext(), R.color.dark_midColor);
+            midColor = ContextCompat.getColor(getApplicationContext(), R.color.dark_midColor);
+            pointSize = 2;
+            setupCharts();
+        }
+
+    }
 
     protected void setColorDark() {
-        mTime.setTextColor(Color.WHITE);
-        mRelativeLayout.setBackgroundColor(Color.BLACK);
+        mTime.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_mTime));
+        statusView.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_statusView));
+        mRelativeLayout.setBackgroundColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_background));
         if (sgvLevel == 1) {
-            mSgv.setTextColor(Color.YELLOW);
-            mDelta.setTextColor(Color.YELLOW);
+            mSgv.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_highColor));
+            mDelta.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_highColor));
         } else if (sgvLevel == 0) {
-            mSgv.setTextColor(Color.WHITE);
-            mDelta.setTextColor(Color.WHITE);
+            mSgv.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_midColor));
+            mDelta.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_midColor));
         } else if (sgvLevel == -1) {
-            mSgv.setTextColor(Color.RED);
-            mDelta.setTextColor(Color.RED);
+            mSgv.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_lowColor));
+            mDelta.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_lowColor));
         }
-
 
         if (ageLevel == 1) {
-            mTimestamp.setTextColor(Color.WHITE);
+            mTimestamp.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_Timestamp));
         } else {
-            mTimestamp.setTextColor(Color.RED);
+            mTimestamp.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.dark_TimestampOld));
         }
 
-        if (batteryLevel == 1) {
-        } else {
-        }
         if (chart != null) {
-            highColor = Color.YELLOW;
-            lowColor = Color.RED;
-            midColor = Color.WHITE;
-            singleLine = false;
+            highColor = ContextCompat.getColor(getApplicationContext(), R.color.dark_highColor);
+            lowColor = ContextCompat.getColor(getApplicationContext(), R.color.dark_lowColor);
+            midColor = ContextCompat.getColor(getApplicationContext(), R.color.dark_midColor);
             pointSize = 2;
             setupCharts();
         }
@@ -378,65 +606,48 @@ public class BIGChart extends WatchFace implements SharedPreferences.OnSharedPre
     protected void setColorBright() {
 
         if (getCurrentWatchMode() == WatchMode.INTERACTIVE) {
-            mRelativeLayout.setBackgroundColor(Color.WHITE);
+            mTime.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.light_bigchart_time));
+            statusView.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.light_bigchart_status));
+            mRelativeLayout.setBackgroundColor(ContextCompat.getColor(getApplicationContext(), R.color.light_background));
             if (sgvLevel == 1) {
-                mSgv.setTextColor(Utils.COLOR_ORANGE);
-                mDelta.setTextColor(Utils.COLOR_ORANGE);
+                mSgv.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.light_highColor));
+                mDelta.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.light_highColor));
             } else if (sgvLevel == 0) {
-                mSgv.setTextColor(Color.BLACK);
-                mDelta.setTextColor(Color.BLACK);
+                mSgv.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.light_midColor));
+                mDelta.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.light_midColor));
             } else if (sgvLevel == -1) {
-                mSgv.setTextColor(Color.RED);
-                mDelta.setTextColor(Color.RED);
+                mSgv.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.light_lowColor));
+                mDelta.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.light_lowColor));
             }
 
             if (ageLevel == 1) {
-                mTimestamp.setTextColor(Color.BLACK);
+                mTimestamp.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.light_mTimestamp1));
             } else {
-                mTimestamp.setTextColor(Color.RED);
+                mTimestamp.setTextColor(ContextCompat.getColor(getApplicationContext(), R.color.light_mTimestamp));
             }
 
-
-            mTime.setTextColor(Color.BLACK);
             if (chart != null) {
-                highColor = Utils.COLOR_ORANGE;
-                midColor = Color.BLUE;
-                lowColor = Color.RED;
-                singleLine = false;
+                highColor = ContextCompat.getColor(getApplicationContext(), R.color.light_highColor);
+                lowColor = ContextCompat.getColor(getApplicationContext(), R.color.light_lowColor);
+                midColor = ContextCompat.getColor(getApplicationContext(), R.color.light_midColor);
                 pointSize = 2;
                 setupCharts();
             }
         } else {
-            mRelativeLayout.setBackgroundColor(Color.BLACK);
-            if (sgvLevel == 1) {
-                mSgv.setTextColor(Color.YELLOW);
-                mDelta.setTextColor(Color.YELLOW);
-            } else if (sgvLevel == 0) {
-                mSgv.setTextColor(Color.WHITE);
-                mDelta.setTextColor(Color.WHITE);
-            } else if (sgvLevel == -1) {
-                mSgv.setTextColor(Color.RED);
-                mDelta.setTextColor(Color.RED);
-            }
-            mTimestamp.setTextColor(Color.WHITE);
-
-            mTime.setTextColor(Color.WHITE);
-            if (chart != null) {
-                highColor = Color.YELLOW;
-                midColor = Color.WHITE;
-                lowColor = Color.RED;
-                singleLine = true;
-                pointSize = 2;
-                setupCharts();
-            }
+            setColorDark();
         }
-
     }
 
 
     public void missedReadingAlert() {
-        int minutes_since   = (int) Math.floor(timeSince()/(1000*60));
-        if(minutes_since >= 16 && ((minutes_since - 16) % 5) == 0) {
+        int minutes_since = (int) Math.floor(timeSince() / (1000 * 60));
+        int maxDelay = 16;
+        if (sharedPrefs.getBoolean("enable_wearG5", false)) {
+            maxDelay = 4;
+            Log.d(TAG, "missedReadingAlert Enter minutes_since " + minutes_since + " call requestData if >= 4 minutes mod 5");//KS
+        }
+
+        if (minutes_since >= maxDelay && ((minutes_since - maxDelay) % 5) == 0) {//KS TODO reduce time for debugging; add notifications
             /*NotificationCompat.Builder notification = new NotificationCompat.Builder(getApplicationContext())
                     .setContentTitle("Missed BG Readings")
                     .setVibrate(vibratePattern);
@@ -446,37 +657,44 @@ public class BIGChart extends WatchFace implements SharedPreferences.OnSharedPre
         }
     }
 
+    public void addDataMap(DataMap dataMap) {//KS
+        double sgv = dataMap.getDouble("sgvDouble");
+        double high = dataMap.getDouble("high");
+        double low = dataMap.getDouble("low");
+        double timestamp = dataMap.getDouble("timestamp");
+
+        //Log.d(TAG, "addToWatchSet entry=" + dataMap);
+
+        final int size = bgDataList.size();
+        BgWatchData bgdata = new BgWatchData(sgv, high, low, timestamp);
+        if (size > 0) {
+            if (bgDataList.contains(bgdata)) {
+                int i = bgDataList.indexOf(bgdata);
+                BgWatchData bgd = bgDataList.get(bgDataList.indexOf(bgdata));
+                //Log.d(TAG, "addToWatchSet replace indexOf=" + i + " bgDataList.sgv=" + bgd.sgv + " bgDataList.timestamp" + bgd.timestamp);
+                bgDataList.set(i, bgdata);
+            } else {
+                //Log.d(TAG, "addToWatchSet add " + " entry.sgv=" + bgdata.sgv + " entry.timestamp" + bgdata.timestamp);
+                bgDataList.add(bgdata);
+            }
+        }
+        else {
+            bgDataList.add(bgdata);
+        }
+    }
+
     public void addToWatchSet(DataMap dataMap) {
+
+        Log.d(TAG, "addToWatchSet bgDataList.size()=" + bgDataList.size());
 
         ArrayList<DataMap> entries = dataMap.getDataMapArrayList("entries");
         if (entries != null) {
+            Log.d(TAG, "addToWatchSet entries.size()=" + entries.size());
             for (DataMap entry : entries) {
-                double sgv = entry.getDouble("sgvDouble");
-                double high = entry.getDouble("high");
-                double low = entry.getDouble("low");
-                double timestamp = entry.getDouble("timestamp");
-
-                final int size = bgDataList.size();
-                if (size > 0) {
-                    if (bgDataList.get(size - 1).timestamp == timestamp)
-                        continue; // Ignore duplicates.
-                }
-
-                bgDataList.add(new BgWatchData(sgv, high, low, timestamp));
+                addDataMap(entry);
             }
         } else {
-            double sgv = dataMap.getDouble("sgvDouble");
-            double high = dataMap.getDouble("high");
-            double low = dataMap.getDouble("low");
-            double timestamp = dataMap.getDouble("timestamp");
-
-            final int size = bgDataList.size();
-            if (size > 0) {
-                if (bgDataList.get(size - 1).timestamp == timestamp)
-                    return; // Ignore duplicates.
-            }
-
-            bgDataList.add(new BgWatchData(sgv, high, low, timestamp));
+            addDataMap(dataMap);
         }
 
         for (int i = 0; i < bgDataList.size(); i++) {
@@ -490,7 +708,7 @@ public class BIGChart extends WatchFace implements SharedPreferences.OnSharedPre
     public void setupCharts() {
         if(bgDataList.size() > 0) { //Dont crash things just because we dont have values, people dont like crashy things
             int timeframe = Integer.parseInt(sharedPrefs.getString("chart_timeframe", "5"));
-            if (singleLine) {
+            if (lowResMode) {
                 bgGraphBuilder = new BgGraphBuilder(getApplicationContext(), bgDataList, pointSize, midColor, timeframe);
             } else {
                 bgGraphBuilder = new BgGraphBuilder(getApplicationContext(), bgDataList, pointSize, highColor, lowColor, midColor, timeframe);

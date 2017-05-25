@@ -10,6 +10,8 @@ import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.os.Handler;
 import android.preference.PreferenceManager;
+
+import com.eveningoutpost.dexdrip.Models.JoH;
 import com.eveningoutpost.dexdrip.Models.UserError.Log;
 
 import android.util.TypedValue;
@@ -40,13 +42,15 @@ public class SnoozeActivity extends ActivityWithMenu {
     Button clearLowDisabled;
     Button disableHighAlerts;
     Button clearHighDisabled;
+    Button sendRemoteSnooze;
     SharedPreferences prefs;
     boolean doMgdl;
 
     NumberPicker snoozeValue;
 
     static final int infiniteSnoozeValueInMinutes = 5256000;//10 years
-    static final int snoozeValues[] = new int []{5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 75, 90, 105, 120, 150, 180, 240, 300, 360, 420, 480, 540, 600};
+    //static final int snoozeValues[] = new int []{5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 75, 90, 105, 120, 150, 180, 240, 300, 360, 420, 480, 540, 600};
+    static final int snoozeValues[] = new int []{ 10, 15, 20, 30, 40, 50, 60, 75, 90, 120, 150, 180, 240, 300, 360, 420, 480, 540, 600};
 
     static int getSnoozeLocatoin(int time) {
         for (int i=0; i < snoozeValues.length; i++) {
@@ -104,7 +108,8 @@ public class SnoozeActivity extends ActivityWithMenu {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        if (Home.get_holo()) { setTheme(R.style.OldAppTheme); }
+        if (Home.get_holo()) { setTheme(R.style.OldAppThemeNoTitleBar); }
+        JoH.fixActionBar(this);
         setContentView(R.layout.activity_snooze);
         alertStatus = (TextView) findViewById(R.id.alert_status);
         snoozeValue = (NumberPicker) findViewById(R.id.snooze);
@@ -147,6 +152,8 @@ public class SnoozeActivity extends ActivityWithMenu {
         //all alerts
         disableAlerts = (Button)findViewById(R.id.button_disable_alerts);
         clearDisabled = (Button)findViewById(R.id.enable_alerts);
+        sendRemoteSnooze = (Button)findViewById(R.id.send_remote_snooze);
+
         buttonSnooze.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
                 int intValue = getTimeFromSnoozeValue(snoozeValue.getValue());
@@ -321,7 +328,7 @@ public class SnoozeActivity extends ActivityWithMenu {
         }
         long now = new Date().getTime();
         if(activeBgAlert == null ) {
-
+            sendRemoteSnooze.setVisibility(Home.getPreferencesBooleanDefaultFalse("send_snooze_to_remote") ? View.VISIBLE : View.GONE);
             if (prefs.getLong("alerts_disabled_until", 0) > now
                     ||
                     (prefs.getLong("low_alerts_disabled_until", 0) > now
@@ -337,6 +344,7 @@ public class SnoozeActivity extends ActivityWithMenu {
             buttonSnooze.setVisibility(View.GONE);
             snoozeValue.setVisibility(View.GONE);
         } else {
+            sendRemoteSnooze.setVisibility(View.GONE);
             if(!aba.ready_to_alarm()) {
                 status = "Active alert exists named \"" + activeBgAlert.name
                         + (aba.is_snoozed?"\" Alert snoozed until ":"\" Alert will rerise at ")
@@ -371,6 +379,11 @@ public class SnoozeActivity extends ActivityWithMenu {
 
         alertStatus.setText(status);
 
+    }
+
+    public void setSendRemoteSnoozeOnClick(View v) {
+        JoH.static_toast_short("Remote snooze..");
+        AlertPlayer.getPlayer().Snooze(xdrip.getAppContext(), -1);
     }
 
 }

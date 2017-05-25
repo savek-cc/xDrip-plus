@@ -18,13 +18,15 @@
                 android:key="highValue"
                 android:title="@string/high_value"
                 android:numeric="decimal"
-                android:summary="The maximum value you consider to be in range."
+                android:inputType="numberDecimal"
+                android:summary="@string/maximum_value"
                 android:defaultValue="170" />
             <EditTextPreference
                 android:key="lowValue"
                 android:title="@string/low_value"
                 android:numeric="decimal"
-                android:summary="The minimum value you consider to be in range."
+                android:inputType="numberDecimal"
+                android:summary="@string/minimum_value"
                 android:defaultValue="70" />
         </PreferenceCategory>
     </PreferenceScreen>

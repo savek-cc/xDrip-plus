@@ -23,6 +23,7 @@ import android.os.IBinder;
 import android.os.PowerManager;
 import android.preference.PreferenceManager;
 
+import com.eveningoutpost.dexdrip.Home;
 import com.eveningoutpost.dexdrip.Models.JoH;
 import com.eveningoutpost.dexdrip.Models.UserError.Log;
 
@@ -133,11 +134,7 @@ public class DexShareCollectionService extends Service {
         Log.d(TAG, "onStartCommand");
         try {
 
-            if (android.os.Build.VERSION.SDK_INT < Build.VERSION_CODES.KITKAT) {
-                stopSelf();
-                return START_NOT_STICKY;
-            }
-            if (CollectionServiceStarter.isBTShare(getApplicationContext())) {
+            if (shouldServiceRun(getApplicationContext())) {
                 setFailoverTimer();
             } else {
                 stopSelf();
@@ -155,11 +152,27 @@ public class DexShareCollectionService extends Service {
         return START_STICKY;
     }
 
+    private static boolean shouldServiceRun(Context context) {
+        if (android.os.Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN_MR2) return false;
+        final boolean result = CollectionServiceStarter.isBTShare(context) && !Home.get_forced_wear();
+        Log.d(TAG, "shouldServiceRun() returning: " + result);
+        return result;
+    }
+
     @Override
     public void onDestroy() {
         super.onDestroy();
         close();
-        setRetryTimer();
+        if (shouldServiceRun(getApplicationContext())) {//Android killed service
+            setRetryTimer();
+        }
+        else {//onDestroy triggered by CollectionServiceStart.stopBtService
+            if (pendingIntent != null) {
+                Log.d(TAG, "onDestroy stop Alarm serviceIntent");
+                AlarmManager alarm = (AlarmManager) getSystemService(ALARM_SERVICE);
+                alarm.cancel(pendingIntent);
+            }
+        }
         foregroundServiceStarter.stop();
         unregisterReceiver(mPairReceiver);
         BgToSpeech.tearDownTTS();
@@ -255,13 +268,19 @@ public class DexShareCollectionService extends Service {
                     mDeviceName = btDevice.name;
                     mDeviceAddress = btDevice.address;
                     mBluetoothAdapter = mBluetoothManager.getAdapter();
-                    if (mBluetoothAdapter.isEnabled() && mBluetoothAdapter.getRemoteDevice(mDeviceAddress) != null) {
-                        connect(mDeviceAddress);
-                        return;
-                    } else {
-                        Log.w(TAG, "Bluetooth is disabled or BT device cant be found");
-                        setRetryTimer();
-                        return;
+                    try {
+                        if (mBluetoothAdapter.isEnabled() && mBluetoothAdapter.getRemoteDevice(mDeviceAddress) != null) {
+                            connect(mDeviceAddress);
+                            return;
+                        } else {
+                            Log.w(TAG, "Bluetooth is disabled or BT device cant be found");
+                            setRetryTimer();
+                            return;
+                        }
+                    } catch (IllegalArgumentException e) {
+                        if (JoH.ratelimit("dex-share-error-log", 180)) {
+                            Log.wtf(TAG, "Error connecting: " + e);
+                        }
                     }
                 } else {
                     Log.w(TAG, "No bluetooth device to try and connect to");
@@ -714,7 +733,7 @@ public class DexShareCollectionService extends Service {
                     state_authInProgress = true;
                     bondDevice();
                 } else {
-                    Log.e(TAG, "The phone is trying to read from paired device without encryption. Android Bug? Have the dexcom forget whatever device it was previously paired to");
+                    Log.e(TAG, "The phone is trying to read from paired device without encryption. Android Bug? Have the dexcom forget whatever device it was previously paired to: ondescriptorwrite code: "+status+ "bond: "+gatt.getDevice().getBondState());
                 }
             } else {
                 Log.e(TAG, "Unknown error writing descriptor");
@@ -736,7 +755,7 @@ public class DexShareCollectionService extends Service {
                     state_authInProgress = true;
                     bondDevice();
                 } else {
-                    Log.e(TAG, "The phone is trying to read from paired device without encryption. Android Bug? Have the dexcom forget whatever device it was previously paired to");
+                    Log.e(TAG, "The phone is trying to read from paired device without encryption. Android Bug? Have the dexcom forget whatever device it was previously paired to: oncharacteristicwrite code: "+status+ "bond: "+gatt.getDevice().getBondState());
                 }
             } else {
                 Log.e(TAG, "Unknown error writing Characteristic");

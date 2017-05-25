@@ -7,9 +7,10 @@
         <item>Wifi Wixel + BT Wixel</item>
         <item>Wifi Wixel + xBridge Wixel</item>
         <item>G4 Share Receiver</item>
-        <item>G5 Transmitter (test)</item>
+        <item>G5 Transmitter</item>
         <item>LimiTTer</item>
         <item>xDrip+ Sync Follower</item>
+        <item>LibreAlarm</item>
     </string-array>
 
     <string-array name="DexCollectionMethodValues">
@@ -22,20 +23,23 @@
         <item>DexcomG5</item>
         <item>LimiTTer</item>
         <item>Follower</item>
+        <item>LibreAlarm</item>
 
     </string-array>
 
     <string-array name="SendToPebbleChoice">
 
-        <item>Standard Watchface</item>
+        <item>Standard Watchface (old)</item>
         <item>Color Trend Watchface</item>
         <item>Pebble Classic Trend Watchface</item>
+        <item>Pebble Trend Clay Version (test)</item>
     </string-array>
     <string-array name="SendToPebbleChoiceValues">
 
         <item>2</item>
         <item>3</item>
         <item>4</item>
+        <item>5</item>
     </string-array>
 
 
@@ -61,12 +65,41 @@
     <string-array name="UpdateChannelDetail">
         <item>Stable - tried and tested versions</item>
         <item>Beta - new features but not fully tested </item>
-        <item>Alpha - nightlies, raw latest versions</item>
+        <item>Alpha - versions for early testing</item>
     </string-array>
 
+    <string-array name="UpdateChannelE">
+        <item>stable</item>
+        <item>beta</item>
+        <item>alpha</item>
+        <item>nightly</item>
+    </string-array>
+
+    <string-array name="UpdateChannelDetailE">
+        <item>Stable - tried and tested versions</item>
+        <item>Beta - new features but not fully tested </item>
+        <item>Alpha - versions for early testing</item>
+        <item>Nightly - untested raw code - experts only!</item>
+    </string-array>
+
+    <string-array name="TreatmentCalibrationChoice">
+        <item>auto</item>
+        <item>ask</item>
+        <item>never</item>
+        <item>always</item>
+    </string-array>
+
+    <string-array name="TreatmentCalibrationChoiceDetail">
+        <item>Automatic mode (best)</item>
+        <item>Ask me every time</item>
+        <item>Never use them</item>
+        <item>Always use them</item>
+    </string-array>
+
+
     <string-array name="bgUnitEntries">
-        <item>mgdl</item>
-        <item>mmol</item>
+        <item>mg/dL</item>
+        <item>mmol/L</item>
     </string-array>
 
     <string-array name="bgUnitValues">
@@ -106,4 +139,11 @@
         <item>Custom Sound/Alarm</item>
         <item>Default xDrip sound</item>
     </string-array>
+
+    <string-array name="reminderAlertType">
+        <item>Android Ringtone/Alarm</item>
+        <item>Custom Audio file</item>
+        <item>Default xDrip+ reminder sound</item>
+    </string-array>
+
 </resources>

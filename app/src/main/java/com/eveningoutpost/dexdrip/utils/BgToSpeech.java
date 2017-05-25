@@ -7,6 +7,11 @@ import android.content.SharedPreferences;
 import android.media.AudioManager;
 import android.preference.PreferenceManager;
 import android.speech.tts.TextToSpeech;
+
+import com.eveningoutpost.dexdrip.BestGlucose;
+import com.eveningoutpost.dexdrip.Home;
+import com.eveningoutpost.dexdrip.Models.BgReading;
+import com.eveningoutpost.dexdrip.Models.JoH;
 import com.eveningoutpost.dexdrip.Models.UserError.Log;
 
 import com.eveningoutpost.dexdrip.UtilityModels.Constants;
@@ -26,14 +31,14 @@ public class BgToSpeech {
     private TextToSpeech tts = null;
     private static final String TAG = "BgToSpeech";
 
-    public static BgToSpeech setupTTS(Context context){
+    public synchronized static BgToSpeech setupTTS(Context context) {
 
         final SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
-        if (! prefs.getBoolean("bg_to_speech", false)){
+        if (!prefs.getBoolean("bg_to_speech", false)) {
             return null;
         }
 
-        if(instance == null) {
+        if (instance == null) {
             instance = new BgToSpeech(context);
             return instance;
         } else {
@@ -43,16 +48,16 @@ public class BgToSpeech {
         }
     }
 
-    public static void tearDownTTS(){
-        if(instance!=null){
+    public synchronized static void tearDownTTS() {
+        if (instance != null) {
             instance.tearDown();
             instance = null;
         } else {
-           // Log.e(TAG, "tearDownTTS() called but instance is null!");
+            // Log.e(TAG, "tearDownTTS() called but instance is null!");
         }
     }
 
-    public static void speak(final double value, long timestamp) {
+    public static synchronized void speak(final double value, long timestamp) {
         if (instance == null) {
             try {
                 setupTTS(xdrip.getAppContext());
@@ -72,7 +77,7 @@ public class BgToSpeech {
             try {
                 tts.shutdown();
             } catch (IllegalArgumentException e) {
-                Log.e(TAG,"Got exception shutting down service: " + e);
+                Log.e(TAG, "Got exception shutting down service: " + e);
             }
             tts = null;
         }
@@ -88,20 +93,47 @@ public class BgToSpeech {
                 if (status == TextToSpeech.SUCCESS && tts != null) {
 
                     //try local language
+
                     Locale loc = Locale.getDefault();
-                    Log.d(TAG, "status == TextToSpeech.SUCCESS + loc" + loc);
+                    try {
+                        final String tts_language = Home.getPreferencesStringDefaultBlank("speak_readings_custom_language").trim();
+                        if (tts_language.length() > 1) {
+                            final String[] lang_components = tts_language.split("_");
+                            String country = (lang_components.length > 1) ? lang_components[1] : "";
+                            loc = new Locale(lang_components[0], country, "");
+                        }
+                    } catch (Exception e) {
+                        Log.e(TAG, "Exception trying to use custom language: " + e);
+                    }
+
+                    Log.d(TAG, "status == TextToSpeech.SUCCESS + loc " + loc);
                     int result;
                     try {
-                        result = tts.setLanguage(Locale.getDefault());
+                        result = tts.setLanguage(loc);
                     } catch (IllegalArgumentException e) {
                         // can end up here with Locales like "OS"
                         Log.e(TAG, "Got TTS set language error: " + e.toString());
                         result = TextToSpeech.LANG_MISSING_DATA;
+                    } catch (Exception e) {
+                        // can end up here with deep errors from tts system
+                        Log.e(TAG, "Got TTS set language deep error: " + e.toString());
+                        result = TextToSpeech.LANG_MISSING_DATA;
                     }
+
                     if (result == TextToSpeech.LANG_MISSING_DATA
                             || result == TextToSpeech.LANG_NOT_SUPPORTED) {
                         Log.e(TAG, "Default system language is not supported");
-                        result = tts.setLanguage(Locale.ENGLISH);
+                        try {
+                            result = tts.setLanguage(Locale.ENGLISH);
+                        } catch (IllegalArgumentException e) {
+                            // can end up here with parcel Locales like "OS"
+                            Log.e(TAG, "Got TTS set default language error: " + e.toString());
+                            result = TextToSpeech.LANG_MISSING_DATA;
+                        } catch (Exception e) {
+                            // can end up here with deep errors from tts system
+                            Log.e(TAG, "Got TTS set default language deep error: " + e.toString());
+                            result = TextToSpeech.LANG_MISSING_DATA;
+                        }
                     }
                     //try any english
                     if (result == TextToSpeech.LANG_MISSING_DATA
@@ -117,22 +149,21 @@ public class BgToSpeech {
         });
     }
 
-    private void speakInternal(final double value, long timestamp){
+    private void speakInternal(final double value, long timestamp) {
 
         // SHIELDING
-        if(timestamp < System.currentTimeMillis()-4*60*1000){
+        if (timestamp < System.currentTimeMillis() - 4 * 60 * 1000) {
             // don't read old values.
             return;
         }
 
         final SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
-        if (! prefs.getBoolean("bg_to_speech", false) || isOngoingCall()){
+        if (!prefs.getBoolean("bg_to_speech", false) || isOngoingCall()) {
             return;
         }
 
-        if (tts == null)
-        {
-            Log.wtf(TAG,"TTS is null in speakInternal");
+        if (tts == null) {
+            Log.wtf(TAG, "TTS is null in speakInternal");
             return;
         }
         // ACTUAL TTS:
@@ -142,15 +173,28 @@ public class BgToSpeech {
                 Log.d(TAG, "successfully spoken");
             } else {
                 Log.d(TAG, "error " + result + ". trying again with new tts-object.");
+                JoH.runOnUiThreadDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            tts.speak(calculateText(value, prefs), TextToSpeech.QUEUE_FLUSH, null);
+                        } catch (Exception e) {
+                            Log.e(TAG, "Got exception TTS delayed: " + e);
+                        }
+                    }
+                }, 2000);
+
             }
         } catch (IllegalStateException e) {
             Log.e(TAG, "IllegalStateException in TTS: " + e.toString());
+        } catch (IllegalArgumentException e) {
+            Log.e(TAG, "IllegalArgumentException in TTS: " + e.toString());
         }
     }
 
     private String calculateText(double value, SharedPreferences prefs) {
-        boolean doMgdl = (prefs.getString("units", "mgdl").equals("mgdl"));
-
+        final boolean doMgdl = (prefs.getString("units", "mgdl").equals("mgdl"));
+        final boolean bg_to_speech_repeat_twice = (prefs.getBoolean("bg_to_speech_repeat_twice", false));
         String text = "";
 
         DecimalFormat df = new DecimalFormat("#");
@@ -165,10 +209,12 @@ public class BgToSpeech {
                 df.setMinimumFractionDigits(1);
                 text = df.format(value * Constants.MGDL_TO_MMOLL);
                 try {
+                    if (tts == null) setupTTS(xdrip.getAppContext());
                     if (tts.getLanguage().getLanguage().startsWith("en")) {
                         // in case the text has a comma in current locale but TTS defaults to English
                         text = text.replace(",", ".");
                     }
+                    if (bg_to_speech_repeat_twice) text = text + " ... ... ... " + text;
                 } catch (NullPointerException e) {
                     Log.e(TAG, "Null pointer for TTS in calculateText");
                 }
@@ -183,7 +229,7 @@ public class BgToSpeech {
     }
 
 
-    public static void installTTSData(Context ctx) {
+    static void installTTSData(Context ctx) {
         try {
             Intent intent = new Intent();
             intent.setAction(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA);
@@ -194,10 +240,22 @@ public class BgToSpeech {
         }
     }
 
-    private boolean isOngoingCall(){
-        AudioManager manager = (AudioManager)context.getSystemService(Context.AUDIO_SERVICE);
-        return (manager.getMode()==AudioManager.MODE_IN_CALL);
+    private boolean isOngoingCall() {
+        AudioManager manager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+        return (manager.getMode() == AudioManager.MODE_IN_CALL);
     }
 
+    public static void testSpeech() {
+        BgToSpeech.setupTTS(xdrip.getAppContext()); // try to initialize now
+        final BgReading bgReading = BgReading.last();
+        if (bgReading != null) {
+            final BestGlucose.DisplayGlucose dg = BestGlucose.getDisplayGlucose();
+            if (dg != null) {
+                BgToSpeech.speak(dg.mgdl, dg.timestamp + 1200000);
+            } else {
+                BgToSpeech.speak(bgReading.calculated_value, bgReading.timestamp + 1200000);
+            }
+        }
+    }
 
 }

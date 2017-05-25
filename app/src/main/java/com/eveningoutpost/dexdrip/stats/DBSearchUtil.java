@@ -5,6 +5,8 @@ import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.preference.PreferenceManager;
+
+import com.eveningoutpost.dexdrip.Models.JoH;
 import com.eveningoutpost.dexdrip.Models.UserError.Log;
 
 import com.activeandroid.Cache;
@@ -22,7 +24,7 @@ import java.util.Vector;
  */
 public class DBSearchUtil {
 
-    public static final String CUTOFF = "13";
+    public static final String CUTOFF = "39";
 
 
     public static int noReadingsAboveRange(Context context) {
@@ -41,31 +43,37 @@ public class DBSearchUtil {
                 .where("timestamp >= " + bounds.start)
                 .where("timestamp <= " + bounds.stop)
                 .where("calculated_value > " + CUTOFF)
-                .where("calculated_value > " + high).count();
+                .where("calculated_value > " + high)
+                .where("snyced == 0").count();
         Log.d("DrawStats", "High count: " + count);
         return count;
     }
 
 
     public static List<BgReadingStats> getReadings(boolean ordered) {
-        Bounds bounds = new Bounds().invoke();
+        try {
+            Bounds bounds = new Bounds().invoke();
 
-        String orderBy = ordered ? "calculated_value desc" : null;
+            String orderBy = ordered ? "calculated_value desc" : null;
 
-        SQLiteDatabase db = Cache.openDatabase();
-        Cursor cur = db.query("bgreadings", new String[]{"timestamp", "calculated_value"}, "timestamp >= ? AND timestamp <=  ? AND calculated_value > ?", new String[]{"" + bounds.start, "" + bounds.stop, CUTOFF}, null, null, orderBy);
-        List<BgReadingStats> readings = new Vector<BgReadingStats>();
-        BgReadingStats reading;
-        if (cur.moveToFirst()) {
-            do {
-                reading = new BgReadingStats();
-                reading.timestamp = (Long.parseLong(cur.getString(0)));
-                reading.calculated_value = (Double.parseDouble(cur.getString(1)));
-                readings.add(reading);
-            } while (cur.moveToNext());
+            SQLiteDatabase db = Cache.openDatabase();
+            Cursor cur = db.query("bgreadings", new String[]{"timestamp", "calculated_value"}, "timestamp >= ? AND timestamp <=  ? AND calculated_value > ? AND snyced == 0", new String[]{"" + bounds.start, "" + bounds.stop, CUTOFF}, null, null, orderBy);
+            List<BgReadingStats> readings = new Vector<BgReadingStats>();
+            BgReadingStats reading;
+            if (cur.moveToFirst()) {
+                do {
+                    reading = new BgReadingStats();
+                    reading.timestamp = (Long.parseLong(cur.getString(0)));
+                    reading.calculated_value = (Double.parseDouble(cur.getString(1)));
+                    readings.add(reading);
+                } while (cur.moveToNext());
+            }
+            return readings;
+
+        } catch (Exception e) {
+            JoH.static_toast_long(e.getMessage());
+            return null;
         }
-        return readings;
-
     }
 
 
@@ -89,6 +97,7 @@ public class DBSearchUtil {
                 .where("calculated_value > " + CUTOFF)
                 .where("calculated_value <= " + high)
                 .where("calculated_value >= " + low)
+                .where("snyced == 0")
                 .count();
         Log.d("DrawStats", "In count: " + count);
 
@@ -112,6 +121,7 @@ public class DBSearchUtil {
                 .where("timestamp <= " + bounds.stop)
                 .where("calculated_value > " + CUTOFF)
                 .where("calculated_value < " + low)
+                .where("snyced == 0")
                 .count();
         Log.d("DrawStats", "Low count: " + count);
 

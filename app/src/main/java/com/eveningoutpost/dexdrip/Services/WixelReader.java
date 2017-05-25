@@ -10,11 +10,15 @@ import com.eveningoutpost.dexdrip.Home;
 import com.eveningoutpost.dexdrip.MapsActivity;
 import com.eveningoutpost.dexdrip.Models.BgReading;
 import com.eveningoutpost.dexdrip.Models.Calibration;
+import com.eveningoutpost.dexdrip.Models.JoH;
 import com.eveningoutpost.dexdrip.Models.TransmitterData;
 import com.eveningoutpost.dexdrip.Models.UserError.Log;
 import com.eveningoutpost.dexdrip.ParakeetHelper;
 import com.eveningoutpost.dexdrip.Models.Sensor;
+import com.eveningoutpost.dexdrip.UtilityModels.BgGraphBuilder;
+import com.eveningoutpost.dexdrip.UtilityModels.StatusItem;
 import com.eveningoutpost.dexdrip.utils.BgToSpeech;
+import com.eveningoutpost.dexdrip.utils.Mdns;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.squareup.okhttp.OkHttpClient;
@@ -28,9 +32,12 @@ import java.io.PrintWriter;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 
@@ -39,15 +46,17 @@ import java.util.concurrent.TimeUnit;
 
 public class WixelReader extends AsyncTask<String, Void, Void > {
 
-    private final static String TAG = WixelReader.class.getName();
-    private static BgToSpeech bgToSpeech;
+    private final static String TAG = WixelReader.class.getSimpleName();
+    //private static BgToSpeech bgToSpeech;
 
     private static OkHttpClient httpClient = null;
+    private static final HashMap<String,String> hostStatus = new HashMap<>();
+    private static final HashMap<String,Long> hostStatusTime = new HashMap<>();
 
     private final Context mContext;
-    PowerManager.WakeLock wakeLock;
+    private PowerManager.WakeLock wakeLock;
 
-    private final static long DEXCOM_PERIOD=300000;
+    private final static long DEXCOM_PERIOD = 300000;
     
     private static int lockCounter = 0;
     
@@ -55,7 +64,7 @@ public class WixelReader extends AsyncTask<String, Void, Void > {
     static int i = 0;
     static int added = 5;
 
-    public WixelReader(Context ctx) {
+    WixelReader(Context ctx) {
         mContext = ctx.getApplicationContext();
         PowerManager pm = (PowerManager) mContext.getSystemService(Context.POWER_SERVICE);
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "WifiReader");
@@ -73,27 +82,21 @@ public class WixelReader extends AsyncTask<String, Void, Void > {
     public static boolean IsConfigured(Context ctx) {
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
         String recieversIpAddresses = prefs.getString("wifi_recievers_addresses", "");
-        if(recieversIpAddresses == null || recieversIpAddresses.equals("") ) {
-            return false;
-        }
-        return true;
+        return !recieversIpAddresses.equals("");
     }
 
-    public static boolean almostEquals( TransmitterRawData e1, TransmitterRawData e2)
+    static boolean almostEquals(TransmitterRawData e1, TransmitterRawData e2)
     {
         if (e1 == null || e2==null) {
             return false;
         }
         // relative time is in ms
-        if ((Math.abs(e1.CaptureDateTime - e2.CaptureDateTime) < 120 * 1000 ) &&
-                (e1.TransmissionId == e2.TransmissionId)) {
-            return true;
-        }
-        return false;
+        return (Math.abs(e1.CaptureDateTime - e2.CaptureDateTime) < 120 * 1000) &&
+                (e1.TransmissionId == e2.TransmissionId);
     }
 
  // last in the array, is first in time
-    public static List<TransmitterRawData> Merge2Lists(List<TransmitterRawData> list1 , List<TransmitterRawData> list2)
+    private static List<TransmitterRawData> Merge2Lists(List<TransmitterRawData> list1, List<TransmitterRawData> list2)
     {
         List<TransmitterRawData> merged = new LinkedList <TransmitterRawData>();
         while (true) {
@@ -123,7 +126,7 @@ public class WixelReader extends AsyncTask<String, Void, Void > {
         return merged;
     }
 
-    public static List<TransmitterRawData> MergeLists(List <List<TransmitterRawData>> allTransmitterRawData)
+    private static List<TransmitterRawData> MergeLists(List<List<TransmitterRawData>> allTransmitterRawData)
     {
         List<TransmitterRawData> MergedList;
         MergedList = allTransmitterRawData.remove(0);
@@ -134,7 +137,7 @@ public class WixelReader extends AsyncTask<String, Void, Void > {
         return MergedList;
     }
 
-    public static List<TransmitterRawData> ReadHost(String hostAndIp, int numberOfRecords)
+    private static List<TransmitterRawData> ReadHost(String hostAndIp, int numberOfRecords)
     {
         int port;
         System.out.println("Reading From " + hostAndIp);
@@ -151,12 +154,14 @@ public class WixelReader extends AsyncTask<String, Void, Void > {
         } catch (NumberFormatException nfe) {
             System.out.println("Invalid port " +hosts[1]);
             Log.e(TAG, "Invalid hostAndIp " + hostAndIp, nfe);
+            statusLog(hosts[0], JoH.hourMinuteString() + " Invalid Port: "+hostAndIp);
             return null;
 
         }
         if (port < 10 || port > 65536) {
             System.out.println("Invalid port " +hosts[1]);
             Log.e(TAG, "Invalid hostAndIp " + hostAndIp);
+            statusLog(hosts[0], JoH.hourMinuteString() + " Invalid Host/Port: "+hostAndIp);
             return null;
 
         }
@@ -175,7 +180,7 @@ public class WixelReader extends AsyncTask<String, Void, Void > {
         return ret;
     }
 
-    public static List<TransmitterRawData> ReadFromMongo(String dbury, int numberOfRecords)
+    private static List<TransmitterRawData> ReadFromMongo(String dbury, int numberOfRecords)
     {
         Log.i(TAG, "Reading From " + dbury);
     	List<TransmitterRawData> tmpList;
@@ -201,20 +206,30 @@ public class WixelReader extends AsyncTask<String, Void, Void > {
     	}
 
     	MongoWrapper mt = new MongoWrapper(dbury, collection, "CaptureDateTime", "MachineNameNotUsed");
-    	return mt.ReadFromMongo(numberOfRecords);
+        List<TransmitterRawData> rd = mt.ReadFromMongo(numberOfRecords);
+        if (rd != null) {
+            long newest_timestamp = 0;
+            for (TransmitterRawData r : rd) {
+                if (newest_timestamp < r.getCaptureDateTime()) {
+                    statusLog(dbury, JoH.hourMinuteString() + " OK data from:", r.getCaptureDateTime());
+                    newest_timestamp = r.getCaptureDateTime();
+                }
+            }
+        }
+        return rd;
     }
 
 
 
 
     // read from http source like cloud hosted parakeet receiver.cgi / json.get
-    public static List<TransmitterRawData> readHttpJson(String url, int numberOfRecords) {
+    private static List<TransmitterRawData> readHttpJson(String url, int numberOfRecords) {
         List<TransmitterRawData> trd_list = new LinkedList<TransmitterRawData>();
         int processNumberOfRecords = numberOfRecords;
         // get more records to ensure we can handle coexistence of parakeet and usb-python-wixel
         // TODO make this work on preference option for the feature
         if (true) numberOfRecords = numberOfRecords + 1;
-
+        long newest_timestamp = 0;
         try {
 
             if (httpClient == null) {
@@ -265,7 +280,9 @@ public class WixelReader extends AsyncTask<String, Void, Void > {
                     // themselves from actual parakeet data even though both can coexist on the
                     // parakeet web service.
 
-                    ParakeetHelper.checkParakeetNotifications(trd.CaptureDateTime, trd.GeoLocation);
+                    if (JoH.ratelimit("parakeet-check-notification", 9)) {
+                        ParakeetHelper.checkParakeetNotifications(trd.CaptureDateTime, trd.GeoLocation);
+                    }
                     if ((trd.GeoLocation != null)) {
                         if (!trd.GeoLocation.equals("-15,-15")) {
                             try {
@@ -277,6 +294,10 @@ public class WixelReader extends AsyncTask<String, Void, Void > {
                             // look a little further if we see usb-wixel data on parakeet app engine
                             processNumberOfRecords = numberOfRecords + 1;
                         }
+                    }
+                    if (newest_timestamp < trd.getCaptureDateTime()) {
+                        statusLog(url, JoH.hourMinuteString() + " OK data from:", trd.getCaptureDateTime());
+                        newest_timestamp = trd.CaptureDateTime;
                     }
                     trd_list.add(0, trd);
                     //  System.out.println( trd.toTableString());
@@ -323,7 +344,7 @@ public class WixelReader extends AsyncTask<String, Void, Void > {
         }
         // merge the information
         if (allTransmitterRawData.size() == 0) {
-            System.out.println("Could not read anything from " + hostsNames);
+            //System.out.println("Could not read anything from " + hostsNames);
             Log.e(TAG, "Could not read anything from " + hostsNames);
             return null;
 
@@ -342,69 +363,96 @@ public class WixelReader extends AsyncTask<String, Void, Void > {
 
     }
 
-    public static List<TransmitterRawData> Read(String hostName,int port, int numberOfRecords)
-    {
-        List<TransmitterRawData> trd_list = new LinkedList<TransmitterRawData>();
-        try
-        {
-            Log.i(TAG, "Read called");
-            Gson gson = new GsonBuilder().create();
+    public static List<TransmitterRawData> Read(String hostName, int port, int numberOfRecords) {
+        final List<TransmitterRawData> trd_list = new LinkedList<TransmitterRawData>();
+        Log.i(TAG, "Read called: " + hostName + " port: " + port);
+
+        final boolean skip_lan = Home.getPreferencesBooleanDefaultFalse("skip_lan_uploads_when_no_lan");
+
+        if (skip_lan && (hostName.endsWith(".local")) && !JoH.isLANConnected()) {
+            Log.d(TAG, "Skipping due to no lan: " + hostName);
+            statusLog(hostName, "Skipping, no LAN");
+            return trd_list; // blank
+        }
+
+        final long time_start = JoH.tsl();
+        String currentAddress = "null";
+        long newest_timestamp = 0;
+
+        try {
+
+            final Gson gson = new GsonBuilder().create();
 
             // An example of using gson.
-            ComunicationHeader ch = new ComunicationHeader();
-            ch.version = 1;
-            ch.numberOfRecords = numberOfRecords;
-            String flat = gson.toJson(ch);
-            ComunicationHeader ch2 = gson.fromJson(flat, ComunicationHeader.class);
-            System.out.println("Results code" + flat + ch2.version);
+            final ComunicationHeader ch = new ComunicationHeader(numberOfRecords);
+            //ch.version = 1;
+            //ch.numberOfRecords = numberOfRecords;
+            // String flat = gson.toJson(ch);
+            //ComunicationHeader ch2 = gson.fromJson(flat, ComunicationHeader.class);
+            //System.out.println("Results code" + flat + ch2.version);
 
             // Real client code
-            InetSocketAddress ServerAdress = new InetSocketAddress(hostName, port);
-            Socket MySocket = new Socket();
-            MySocket.connect(ServerAdress, 10000);
+            final InetSocketAddress ServerAddress = new InetSocketAddress(Mdns.genericResolver(hostName), port);
+            currentAddress = ServerAddress.getAddress().getHostAddress();
+            if (skip_lan && currentAddress.startsWith("192.168.") && !JoH.isLANConnected()) {
+                Log.d(TAG, "Skipping due to no lan: " + hostName);
+                statusLog(hostName, "Skipping, no LAN");
+                return trd_list; // blank
+            }
 
-            System.out.println("After the new socket \n");
-            MySocket.setSoTimeout(2000);
+            final Socket MySocket = new Socket();
+            MySocket.connect(ServerAddress, 10000);
 
-            System.out.println("client connected... " );
+            //System.out.println("After the new socket \n");
+            MySocket.setSoTimeout(3000);
 
-            PrintWriter out = new PrintWriter(MySocket.getOutputStream(), true);
-            BufferedReader in = new BufferedReader(new InputStreamReader(MySocket.getInputStream()));
+            //System.out.println("client connected... " );
 
-            out.println(flat);
+            final PrintWriter out = new PrintWriter(MySocket.getOutputStream(), true);
+            final BufferedReader in = new BufferedReader(new InputStreamReader(MySocket.getInputStream()));
 
-            while(true) {
+            out.println(ch.toJson());
+
+            while (true) {
                 String data = in.readLine();
-                if(data == null) {
-                    System.out.println("recieved null exiting");
+                if (data == null) {
+                    Log.d(TAG, "recieved null exiting");
                     break;
                 }
-                if(data.equals("")) {
-                    System.out.println("recieved \"\" exiting");
+                if (data.equals("")) {
+                    Log.d(TAG, "recieved \"\" exiting");
                     break;
                 }
 
                 //System.out.println( "data size " +data.length() + " data = "+ data);
-                TransmitterRawData trd = gson.fromJson(data, TransmitterRawData.class);
+                final TransmitterRawData trd = gson.fromJson(data, TransmitterRawData.class);
                 trd.CaptureDateTime = System.currentTimeMillis() - trd.RelativeTime;
-                MapsActivity.newMapLocation(trd.GeoLocation,trd.CaptureDateTime);
+                MapsActivity.newMapLocation(trd.GeoLocation, trd.CaptureDateTime);
 
-                trd_list.add(0,trd);
+                if (newest_timestamp < trd.getCaptureDateTime()) {
+                    statusLog(hostName, JoH.hourMinuteString() + " OK data from:", trd.getCaptureDateTime());
+                    newest_timestamp = trd.getCaptureDateTime();
+                }
+
+                trd_list.add(0, trd);
                 //  System.out.println( trd.toTableString());
-                if(trd_list.size() == numberOfRecords) {
-                	// We have the data we want, let's get out
-                	break;
+                if (trd_list.size() == numberOfRecords) {
+                    // We have the data we want, let's get out
+                    break;
                 }
             }
 
 
             MySocket.close();
             return trd_list;
-        }catch(SocketTimeoutException s) {
-            Log.e(TAG, "Socket timed out! " + s.toString());
-        }
-        catch(IOException e) {
-            Log.e(TAG, "cought IOException! "+ e.toString());
+        } catch (SocketTimeoutException s) {
+            Log.e(TAG, "Socket timed out! " + hostName + " : " + currentAddress + " : " + s.toString() + " after: " + JoH.msSince(time_start));
+            statusLog(hostName, JoH.hourMinuteString() + " " + s.toString());
+        } catch (IOException e) {
+            Log.e(TAG, "caught IOException! " + hostName + " : " + currentAddress + " : " + " : " + e.toString());
+            statusLog(hostName, JoH.hourMinuteString() + " " + e.toString());
+        } catch (IllegalArgumentException e) {
+            Log.e(TAG, "Argument error on: " + hostName + " " + e.toString());
         }
         return trd_list;
     }
@@ -463,7 +511,7 @@ public class WixelReader extends AsyncTask<String, Void, Void > {
     }
 
     
-    public void readData()
+    private void readData()
     {
         Long LastReportedTime = 0L;
     	TransmitterData lastTransmitterData = TransmitterData.last();
@@ -471,9 +519,14 @@ public class WixelReader extends AsyncTask<String, Void, Void > {
     	    LastReportedTime = lastTransmitterData.timestamp;
 
             // jamorham fix to avoid going twice to network when we just got a packet
-            if ((new Date().getTime() - LastReportedTime) < DEXCOM_PERIOD-2000) {
-            Log.d(TAG, "Already have a recent packet - returning");
-            return;
+            if ((new Date().getTime() - LastReportedTime) < DEXCOM_PERIOD - 2000) {
+                Log.d(TAG, "Already have a recent packet - returning");
+                if (JoH.ratelimit("deferred-msg", 60)) {
+                    statusLog(" Deferred", "Already have recent reading");
+                }
+                return;
+            } else {
+                statusLog(" Deferred", "");
             }
 
 
@@ -493,15 +546,17 @@ public class WixelReader extends AsyncTask<String, Void, Void > {
         // How many packets should we read? we look at the maximum time between last calibration and last reading time
         // and calculate how much are needed.
         
-        Calibration lastCalibration = Calibration.last();
+        Calibration lastCalibration = Calibration.lastValid();
         if(lastCalibration != null) {
-            startReadTime = Math.max(startReadTime, (long)(lastCalibration.timestamp));
+            startReadTime = Math.max(startReadTime, lastCalibration.timestamp);
         }
         Long gapTime = new Date().getTime() - startReadTime + 120000;
         int packetsToRead = (int) (gapTime / (5 * 60000));
         packetsToRead = Math.min(packetsToRead, 200); // don't read too much, but always read 1.
         packetsToRead = Math.max(packetsToRead, 1); 
-        
+
+
+
         Log.d(TAG,"reading " + packetsToRead + " packets");
 		LastReadingArr = Read(recieversIpAddresses ,packetsToRead);
 		
@@ -537,7 +592,7 @@ public class WixelReader extends AsyncTask<String, Void, Void > {
     }
 
 
-    public void setSerialDataToTransmitterRawData(int raw_data, int filtered_data ,int sensor_battery_leve, Long CaptureTime) {
+    private void setSerialDataToTransmitterRawData(int raw_data, int filtered_data, int sensor_battery_leve, Long CaptureTime) {
 
         TransmitterData transmitterData = TransmitterData.create(raw_data, filtered_data, sensor_battery_leve, CaptureTime);
         if (transmitterData != null) {
@@ -545,7 +600,7 @@ public class WixelReader extends AsyncTask<String, Void, Void > {
             if (sensor != null) {
                 BgReading bgReading = BgReading.create(transmitterData.raw_data, filtered_data, mContext, CaptureTime);
 
-                sensor.latest_battery_level = (sensor.latest_battery_level!=0)?Math.min(sensor.latest_battery_level, transmitterData.sensor_battery_level):transmitterData.sensor_battery_level;;
+                sensor.latest_battery_level = (sensor.latest_battery_level!=0)?Math.min(sensor.latest_battery_level, transmitterData.sensor_battery_level):transmitterData.sensor_battery_level;
                 sensor.save();
             } else {
                 Log.d(TAG, "No Active Sensor, Data only stored in Transmitter Data");
@@ -553,7 +608,7 @@ public class WixelReader extends AsyncTask<String, Void, Void > {
         }
     }
     
-    static Long timeForNextReadFake() {
+  /*  static Long timeForNextReadFake() {
         return 10000L;
     }
     
@@ -571,5 +626,25 @@ public class WixelReader extends AsyncTask<String, Void, Void > {
         Log.d(TAG, "calling setSerialDataToTransmitterRawData " + fakedRaw);
         setSerialDataToTransmitterRawData(fakedRaw, fakedRaw ,215, new Date().getTime());
         Log.d(TAG, "returned from setSerialDataToTransmitterRawData " + fakedRaw);
+    }*/
+
+    // data for MegaStatus
+    static List<StatusItem> megaStatus() {
+        final List<StatusItem> l = new ArrayList<>();
+        for (Map.Entry<String, String> entry : hostStatus.entrySet()) {
+            final long status_time = hostStatusTime.get(entry.getKey());
+            if (entry.getValue().length()>0) l.add(new StatusItem(entry.getKey(), entry.getValue() + ((status_time != 0) ? (" " + JoH.niceTimeSince(status_time) + " " + "ago") : ""),JoH.msSince(status_time) <= BgGraphBuilder.DEXCOM_PERIOD ? StatusItem.Highlight.GOOD : JoH.msSince(status_time) <= BgGraphBuilder.DEXCOM_PERIOD*2 ? StatusItem.Highlight.NOTICE : StatusItem.Highlight.NORMAL));
+        }
+        return l;
+    }
+
+    static void statusLog(String key, String msg) {
+        statusLog(key, msg, 0); // default no time since
+    }
+
+    // timestamp or 0 = don't use or -1 = now
+    static void statusLog(String key, String msg, long time) {
+        hostStatus.put(key, msg);
+        hostStatusTime.put(key, (time != -1) ? time : JoH.tsl());
     }
 }

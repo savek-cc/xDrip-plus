@@ -1,27 +1,22 @@
 package com.eveningoutpost.dexdrip;
 
-import android.bluetooth.BluetoothDevice;
+import android.app.AlertDialog;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Bundle;
-
-import com.eveningoutpost.dexdrip.G5Model.Extensions;
-import com.eveningoutpost.dexdrip.G5Model.Transmitter;
-import com.eveningoutpost.dexdrip.Models.UserError.Log;
-
 import android.preference.PreferenceManager;
 import android.view.View;
 import android.widget.Button;
 import android.widget.Toast;
 
+import com.eveningoutpost.dexdrip.Models.Calibration;
+import com.eveningoutpost.dexdrip.Models.JoH;
 import com.eveningoutpost.dexdrip.Models.Sensor;
 import com.eveningoutpost.dexdrip.Services.G5CollectionService;
 import com.eveningoutpost.dexdrip.UtilityModels.AlertPlayer;
+import com.eveningoutpost.dexdrip.calibrations.PluggableCalibration;
 import com.eveningoutpost.dexdrip.utils.ActivityWithMenu;
-
-import java.lang.reflect.Method;
-import java.util.Date;
-import java.util.Set;
 
 public class StopSensor extends ActivityWithMenu {
     public static String menu_name = "Stop Sensor";
@@ -35,6 +30,7 @@ public class StopSensor extends ActivityWithMenu {
             startActivity(intent);
             finish();
         } else {
+            JoH.fixActionBar(this);
             setContentView(R.layout.activity_stop_sensor);
             button = (Button)findViewById(R.id.stop_sensor);
             addListenerOnButton();
@@ -57,6 +53,9 @@ public class StopSensor extends ActivityWithMenu {
 
                 Toast.makeText(getApplicationContext(), "Sensor stopped", Toast.LENGTH_LONG).show();
 
+                LibreAlarmReceiver.clearSensorStats();
+                PluggableCalibration.invalidateAllCaches();
+
                 //If Sensor is stopped for G5, we need to prevent further BLE scanning.
                 SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(getApplicationContext());
                 String collection_method = prefs.getString("dex_collection_method", "BluetoothWixel");
@@ -65,11 +64,39 @@ public class StopSensor extends ActivityWithMenu {
                     startService(serviceIntent);
                 }
 
-                Intent intent = new Intent(getApplicationContext(), Home.class);
-                startActivity(intent);
+                final Intent intent = new Intent(getApplicationContext(), Home.class);
+                intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                Home.startIntentThreadWithDelayedRefresh(intent);
+
                 finish();
             }
 
         });
+    }
+
+    public void resetAllCalibrations(View v) {
+
+        final AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("Are you sure?");
+        builder.setMessage("Do you want to delete and reset the calibrations for this sensor?");
+
+        builder.setNegativeButton("No", new DialogInterface.OnClickListener() {
+            public void onClick(DialogInterface dialog, int which) {
+                dialog.dismiss();
+
+            }
+        });
+
+        builder.setPositiveButton("Yes", new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialog, int which) {
+                Calibration.invalidateAllForSensor();
+                dialog.dismiss();
+                finish();
+            }
+        });
+        builder.create().show();
+
+
     }
 }
